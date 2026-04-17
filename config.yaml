@@ -1,0 +1,31 @@
+listen: "0.0.0.0:8080"
+csv_path: "./21-25订单.csv"
+data_dir: "./data"
+db_path: "./data/app.db"
+admin_password: "admin123"
+session_ttl_hours: 12
+limits:
+  per_kind_max: 9
+  submit_body_max_mb: 60
+  single_file_max_mb: 10
+  single_file_decode_cap_mb: 20
+  max_pixels: 50000000
+concurrency:
+  max_uploads: 4
+  max_pdf_rebuilds: 4
+  max_year_exports: 1
+  max_bundle_exports: 4
+  max_image_decodes: 4
+  acquire_timeout_seconds: 5
+db:
+  max_open_conns: 8
+  max_idle_conns: 4
+  conn_max_lifetime_minutes: 30
+image:
+  pdf_order:
+    - "合同"
+    - "发票"
+  accepted_mime:
+    - "image/jpeg"
+    - "image/png"
+    - "image/webp"

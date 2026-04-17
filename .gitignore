@@ -1,0 +1,11 @@
+data/
+backend/dist/
+node_modules/
+*.db
+*.db-*
+frontend/dist/*
+!frontend/dist/.gitkeep
+!frontend/dist/index.html
+.DS_Store
+.tmp/
+/server

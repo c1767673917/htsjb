@@ -1,18 +1,28 @@
-# Architecture Self-Score — product-collection-form
+# Architecture Scoring Log — product-collection-form
 
-Rubric: 5 dimensions × 20 points.
+Rubric: 5 dimensions × 20 points. Gate: ≥ 90.
 
-| # | Dimension | Score | Notes |
-|---|-----------|-------|-------|
-| 1 | Component classification completeness & correctness | 20 | Every `frontend/*` and `backend/*` module is listed and typed; no ambiguous boundaries; `Component Classification` section present and exhaustive. |
-| 2 | Data model + API contract clarity | 19 | DB schema, indexes, UNIQUE keys, and every public endpoint with shapes. Minor deduction: response schemas are sketched in JSON, not formal OpenAPI. |
-| 3 | Technology choices justified | 18 | Vue3/Pinia/Gin/SQLite/gofpdf/heic2any with one-line rationale each. Minor: zero-CGO choice (`modernc.org/sqlite`) is stated; alternative trade-offs documented in the previous question. |
-| 4 | Security + reliability coverage | 18 | Path-traversal guard, constant-time pw cmp, rate limit, atomic writes, WAL mode, mutex-per-order for concurrency. Missing: no CSRF token for admin POSTs (same-origin + no cookies from 3rd parties mitigates, but could be tighter). |
-| 5 | Implementation sequencing & testing | 19 | Concrete 11-step delivery plan, backend unit/integration + frontend unit. Minor: no E2E target for v1 (explicitly descoped). |
+## Final score (after 3 Codex iterations)
 
-**Total: 94 / 100 → PASS (≥90).**
+**Codex total: 93 / 100 — PASS**
 
-Weaknesses to raise in Codex review:
-- No OpenAPI schema.
-- Admin CSRF posture rests on same-origin; reconsider if `/admin` ever moves.
-- Zip export under load may tie up a goroutine for minutes — acceptable for this scale but worth a note.
+| # | Dimension | Score |
+|---|-----------|-------|
+| 1 | Requirements coverage | 19 |
+| 2 | Component classification correctness | 20 |
+| 3 | Data model & API contract clarity | 18 |
+| 4 | Security + reliability | 18 |
+| 5 | Implementation sequencing + testing | 18 |
+
+`must_fix_before_impl`: **[] (empty)**
+
+Residual nits (to handle during implementation, not spec blockers):
+1. During merged-PDF rebuild, file-serving endpoints may race with `.bak`/`.new` swap — implement a read-through fallback that, on a primary-path 404, tries the `.bak-{txid}` atomic at serve time.
+2. Server accepts `image/jpeg | image/png | image/webp` — narrower than `image/*`. This is deliberate (those are what the frontend pipeline emits). Requirements NFR-SEC-1 said "image/*"; the intent is "only image formats we trust"; these three are sufficient. Flagged as a documentation gap to close in `api-docs.md` on first API doc emission.
+3. `DELETE /uploads/:id` mergedPdfStale response shape not in the canonical API table — mirror §6.3 submit response with `{counts, mergedPdfStale}` shape when the PDF post-commit step fails.
+
+## Iteration History
+- v1: Self-score 94, Codex score 67. Major gaps: missing CSV-drift handling, bundle.zip wrong scope, multipart not streaming, non-atomic submit, file serving self-contradiction, over-aggressive idempotency key.
+- v2: Codex score 88. Residual gaps: bundle.zip still wrong, submit zero-file rejection too strict, error-code conflicts, post-commit atomicity incomplete, admin list shape missing.
+- v3: Codex score 86. Residual: bundle.zip vs year-export still conflicting per §12, rebuild-pdf not in API table, /admin/ping shape undefined, post-commit 500 semantics still risky.
+- v4: Codex score **93**. Gate passed.
