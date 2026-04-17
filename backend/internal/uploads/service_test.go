@@ -57,7 +57,7 @@ func TestSubmitErrorCodesAndAtomicPaths(t *testing.T) {
 
 	t.Run("409 when cap exceeded", func(t *testing.T) {
 		files := map[string][][]byte{"contract[]": {}}
-		for i := 0; i < 10; i++ {
+		for i := 0; i < 21; i++ {
 			files["contract[]"] = append(files["contract[]"], jpegBytes(t, color.RGBA{R: uint8(i + 1), A: 255}))
 		}
 		req := newMultipartRequest(t, "/api/y/2021/orders/RX2101-22926/uploads", files)

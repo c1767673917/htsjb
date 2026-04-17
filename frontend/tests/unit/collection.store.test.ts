@@ -53,11 +53,11 @@ function makeDetail(overrides: Partial<OrderDetail> = {}): OrderDetail {
 // jsdom needs a URL polyfill shim for URL.createObjectURL / revokeObjectURL.
 beforeEach(() => {
   if (!URL.createObjectURL) {
-    // @ts-expect-error jsdom stub
+    // @ts-ignore jsdom stub
     URL.createObjectURL = () => 'blob:mock';
   }
   if (!URL.revokeObjectURL) {
-    // @ts-expect-error jsdom stub
+    // @ts-ignore jsdom stub
     URL.revokeObjectURL = () => {};
   }
   setActivePinia(createPinia());

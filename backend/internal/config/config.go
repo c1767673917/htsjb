@@ -64,7 +64,7 @@ func Default() Config {
 		AdminPassword:   "CHANGE-ME",
 		SessionTTLHours: 12,
 		Limits: Limits{
-			PerKindMax:            9,
+			PerKindMax:            20,
 			SubmitBodyMaxMB:       60,
 			SingleFileMaxMB:       10,
 			SingleFileDecodeCapMB: 20,
