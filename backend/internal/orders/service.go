@@ -88,6 +88,7 @@ type UploadFile struct {
 	Filename   string    `db:"filename" json:"filename"`
 	Size       int64     `db:"byte_size" json:"size"`
 	URL        string    `json:"url"`
+	Operator   string    `db:"operator" json:"operator"`
 	Kind       string    `db:"kind" json:"-"`
 	UploadedAt time.Time `db:"uploaded_at" json:"-"`
 }
@@ -115,6 +116,7 @@ type AdminListItem struct {
 	LastUploadAt *time.Time `db:"last_upload_at" json:"lastUploadAt"`
 	Uploaded     bool       `json:"uploaded"`
 	Counts       Counts     `json:"counts"`
+	Operators    []string   `json:"operators"`
 }
 
 type AdminList struct {
@@ -140,7 +142,8 @@ type adminListRow struct {
 	LastUploadAtRaw sql.NullString `db:"last_upload_at"`
 	ContractCnt     int            `db:"contract_cnt"`
 	InvoiceCnt      int            `db:"invoice_cnt"`
-	DeliveryCnt  int        `db:"delivery_cnt"`
+	DeliveryCnt     int            `db:"delivery_cnt"`
+	OperatorsRaw    sql.NullString `db:"operators"`
 }
 
 type searchRow struct {
@@ -303,7 +306,7 @@ WHERE year = ? AND order_no = ?
 
 	var uploadRows []UploadFile
 	if err := s.db.SelectContext(ctx, &uploadRows, `
-SELECT id, seq, filename, byte_size, kind, uploaded_at
+SELECT id, seq, filename, byte_size, kind, uploaded_at, operator
 FROM uploads
 WHERE year = ? AND order_no = ?
 	ORDER BY CASE kind WHEN '合同' THEN 1 WHEN '发票' THEN 2 ELSE 3 END, seq ASC, id ASC`, year, orderNo); err != nil {
@@ -466,9 +469,31 @@ func (s *Service) AdminList(ctx context.Context, year, page, size int, onlyUploa
 			LastUploadAt: parseSQLiteTime(row.LastUploadAtRaw),
 			Uploaded:     row.ContractCnt+row.InvoiceCnt+row.DeliveryCnt > 0,
 			Counts:       counts,
+			Operators:    splitOperators(row.OperatorsRaw),
 		})
 	}
 	return AdminList{Page: page, Size: size, Total: total, Items: items}, nil
+}
+
+func splitOperators(raw sql.NullString) []string {
+	if !raw.Valid || raw.String == "" {
+		return []string{}
+	}
+	parts := strings.Split(raw.String, "\x1f")
+	seen := make(map[string]struct{}, len(parts))
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		if _, ok := seen[p]; ok {
+			continue
+		}
+		seen[p] = struct{}{}
+		out = append(out, p)
+	}
+	return out
 }
 
 func (s *Service) adminListBatch(ctx context.Context, whereSQL string, args []any, size int, cursor string) ([]adminListRow, string, error) {
@@ -482,7 +507,8 @@ SELECT
   MAX(u.uploaded_at) AS last_upload_at,
   COALESCE(SUM(CASE WHEN u.kind = '合同' THEN 1 ELSE 0 END), 0) AS contract_cnt,
   COALESCE(SUM(CASE WHEN u.kind = '发票' THEN 1 ELSE 0 END), 0) AS invoice_cnt,
-  COALESCE(SUM(CASE WHEN u.kind = '发货单' THEN 1 ELSE 0 END), 0) AS delivery_cnt
+  COALESCE(SUM(CASE WHEN u.kind = '发货单' THEN 1 ELSE 0 END), 0) AS delivery_cnt,
+  COALESCE(GROUP_CONCAT(NULLIF(u.operator, ''), char(31)), '') AS operators
 FROM orders o
 LEFT JOIN uploads u ON u.year = o.year AND u.order_no = o.order_no
 WHERE ` + whereSQL + `

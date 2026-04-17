@@ -201,6 +201,7 @@ export interface UploadedPhoto {
   filename: string;
   url: string;
   size: number;
+  operator?: string;
 }
 
 export interface OrderDetail {
@@ -237,6 +238,7 @@ export interface AdminOrderRow {
   lastUploadAt: string | null;
   csvRemoved: boolean;
   mergedPdfStale?: boolean;
+  operators: string[];
 }
 
 export interface AdminOrderList {

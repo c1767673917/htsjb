@@ -90,6 +90,12 @@ function humanSize(bytes: number): string {
           <span>#{{ photo.seq }}</span>
           <span>{{ humanSize(photo.size) }}</span>
         </div>
+        <div
+          v-if="adminDelete && photo.operator"
+          style="font-size: 11px; color: var(--color-text-muted, #666); padding: 2px 4px"
+        >
+          录入：{{ photo.operator }}
+        </div>
       </div>
 
       <!-- Staged (not yet submitted) photos. -->

@@ -41,6 +41,7 @@ function makeRow(orderNo: string, customer = ''): AdminOrderRow {
     counts: { 合同: 0, 发票: 0, 发货单: 0 },
     lastUploadAt: null,
     csvRemoved: false,
+    operators: [],
   };
 }
 

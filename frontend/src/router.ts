@@ -17,13 +17,22 @@ import { setOn401Handler } from '@/lib/api';
 export const YEARS = [2021, 2022, 2023, 2024, 2025] as const;
 export type CollectionYear = (typeof YEARS)[number];
 
-const collectionRoutes: RouteRecordRaw[] = YEARS.map((year) => ({
-  path: `/y${year}`,
-  name: `y${year}`,
-  component: CollectionView,
-  props: { year },
-  meta: { title: `${year} 年度收集` },
-}));
+const collectionRoutes: RouteRecordRaw[] = YEARS.flatMap((year) => [
+  {
+    path: `/y${year}`,
+    name: `y${year}`,
+    component: CollectionView,
+    props: { year, operator: '' },
+    meta: { title: `${year} 年度收集` },
+  },
+  {
+    path: `/y${year}/:operator`,
+    name: `y${year}-operator`,
+    component: CollectionView,
+    props: (route) => ({ year, operator: String(route.params.operator ?? '') }),
+    meta: { title: `${year} 年度收集` },
+  },
+]);
 
 const routes: RouteRecordRaw[] = [
   { path: '/', redirect: '/y2021' },

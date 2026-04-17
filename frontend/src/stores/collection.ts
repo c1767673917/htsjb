@@ -49,6 +49,7 @@ function makeId(): string {
 
 export const useCollectionStore = defineStore('collection', () => {
   const year = ref<number>(0);
+  const operator = ref<string>('');
   const progress = ref<ProgressShape | null>(null);
   const searchQuery = ref<string>('');
   const searchResults = ref<SearchItem[]>([]);
@@ -86,6 +87,10 @@ export const useCollectionStore = defineStore('collection', () => {
       if (searchAbort) searchAbort.abort();
       closeDetail();
     }
+  }
+
+  function setOperator(op: string) {
+    operator.value = (op ?? '').trim();
   }
 
   async function fetchProgress() {
@@ -260,6 +265,7 @@ export const useCollectionStore = defineStore('collection', () => {
     }
 
     const form = new FormData();
+    if (operator.value) form.append('operator', operator.value);
     for (const kind of KINDS) {
       const field = KIND_FIELD[kind];
       let idx = 0;
@@ -296,6 +302,7 @@ export const useCollectionStore = defineStore('collection', () => {
 
   return {
     year,
+    operator,
     progress,
     searchQuery,
     searchResults,
@@ -308,6 +315,7 @@ export const useCollectionStore = defineStore('collection', () => {
     stagedCount,
     canSubmit,
     setYear,
+    setOperator,
     fetchProgress,
     runSearch,
     openOrder,

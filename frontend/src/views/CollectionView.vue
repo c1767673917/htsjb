@@ -13,7 +13,7 @@ import OrderDetailPanel from '@/components/OrderDetailPanel.vue';
 import { useCollectionStore, type UploadKind } from '@/stores/collection';
 import type { SearchItem } from '@/lib/api';
 
-const props = defineProps<{ year: number }>();
+const props = defineProps<{ year: number; operator?: string }>();
 
 const store = useCollectionStore();
 const {
@@ -27,17 +27,19 @@ const {
   submitting,
   stagedCount,
   lastMergedPdfStale,
+  operator,
 } = storeToRefs(store);
 
-async function init(year: number) {
+async function init(year: number, operator: string) {
   store.setYear(year);
+  store.setOperator(operator);
   await store.fetchProgress();
 }
 
-onMounted(() => init(props.year));
+onMounted(() => init(props.year, props.operator ?? ''));
 watch(
-  () => props.year,
-  (y) => init(y),
+  () => [props.year, props.operator ?? ''] as const,
+  ([y, op]) => init(Number(y), String(op)),
 );
 
 onBeforeUnmount(() => {
@@ -74,6 +76,13 @@ async function onSubmit() {
         :uploaded="progress?.uploaded ?? null"
         :percent="progress?.percent ?? null"
       />
+      <div
+        v-if="operator"
+        aria-label="录入人"
+        style="padding: 4px 12px; font-size: var(--font-sm); color: var(--color-text)"
+      >
+        录入人：<strong>{{ operator }}</strong>
+      </div>
       <SearchBar
         v-model="searchQuery"
         :results="searchResults"

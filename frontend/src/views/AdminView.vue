@@ -75,6 +75,11 @@ function countsText(row: AdminOrderRow): string {
   return `合同 ${c.合同} / 发票 ${c.发票} / 发货单 ${c.发货单}`;
 }
 
+function operatorsText(row: AdminOrderRow): string {
+  if (!row.operators || row.operators.length === 0) return '—';
+  return row.operators.join('、');
+}
+
 function mergedPdfHref(): string | null {
   if (!currentRow.value) return null;
   return adminApi.mergedPdfUrl(currentYear.value, currentRow.value.orderNo);
@@ -170,6 +175,7 @@ function gotoPage(p: number) {
               <th>客户</th>
               <th>已上传</th>
               <th>合同/发票/发货单</th>
+              <th>录入人</th>
               <th>最后上传</th>
               <th>操作</th>
             </tr>
@@ -190,6 +196,7 @@ function gotoPage(p: number) {
                 <span v-if="row.csvRemoved" class="badge badge-muted" style="margin-left:4px">CSV 已移除</span>
               </td>
               <td>{{ countsText(row) }}</td>
+              <td class="truncate" style="max-width: 140px">{{ operatorsText(row) }}</td>
               <td>{{ formatDate(row.lastUploadAt) }}</td>
               <td>
                 <button type="button" class="btn btn-ghost tap" @click.stop="onRowClick(row)">查看</button>

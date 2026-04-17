@@ -186,6 +186,7 @@ func (s *Service) Submit(c *gin.Context, year int, orderNo string) (SubmitRespon
 		"发票":  {},
 		"发货单": {},
 	}
+	operator := ""
 	for {
 		part, err := reader.NextPart()
 		if err != nil {
@@ -196,6 +197,18 @@ func (s *Service) Submit(c *gin.Context, year int, orderNo string) (SubmitRespon
 				return SubmitResponse{}, apierror.ErrRequestTooLarge
 			}
 			return SubmitResponse{}, apierror.Wrap(err, http.StatusBadRequest, "BAD_REQUEST", "读取上传文件失败")
+		}
+		if part.FormName() == "operator" && part.FileName() == "" {
+			buf, err := io.ReadAll(io.LimitReader(part, 128))
+			_ = part.Close()
+			if err != nil {
+				if isMaxBytesError(err) {
+					return SubmitResponse{}, apierror.ErrRequestTooLarge
+				}
+				return SubmitResponse{}, apierror.Wrap(err, http.StatusBadRequest, "BAD_REQUEST", "读取录入人字段失败")
+			}
+			operator = sanitizeOperator(string(buf))
+			continue
 		}
 		kind, ok := normalizeField(part.FormName())
 		if !ok {
@@ -283,9 +296,9 @@ func (s *Service) Submit(c *gin.Context, year int, orderNo string) (SubmitRespon
 			createdPaths = append(createdPaths, finalPath)
 
 			result, err := tx.ExecContext(ctx, `
-INSERT INTO uploads (year, order_no, kind, seq, filename, byte_size, sha256)
-VALUES (?, ?, ?, ?, ?, ?, ?)`,
-				year, orderNo, kind, seq, filename, size, sha,
+INSERT INTO uploads (year, order_no, kind, seq, filename, byte_size, sha256, operator)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+				year, orderNo, kind, seq, filename, size, sha, operator,
 			)
 			if err != nil {
 				s.rollbackCreatedFiles(createdPaths)
@@ -520,6 +533,27 @@ func streamPartToFile(ctx context.Context, part *multipart.Part, dstPath string,
 		return "", 0, apierror.ErrRequestTooLarge
 	}
 	return mimeType, size, nil
+}
+
+func sanitizeOperator(raw string) string {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return ""
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		if r == 0 || r == '\n' || r == '\r' || r == '\t' || r == 0x1f {
+			continue
+		}
+		b.WriteRune(r)
+	}
+	result := b.String()
+	if len([]rune(result)) > 32 {
+		runes := []rune(result)
+		result = string(runes[:32])
+	}
+	return result
 }
 
 func normalizeField(name string) (string, bool) {
