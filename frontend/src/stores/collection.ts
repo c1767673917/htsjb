@@ -136,6 +136,12 @@ export const useCollectionStore = defineStore('collection', () => {
     currentOrderNo.value = orderNo;
     currentDetail.value = null;
     lastMergedPdfStale.value = false;
+    // Dismiss the search results panel once an order is chosen so the detail
+    // view is not obscured by the candidate list.
+    if (searchAbort) searchAbort.abort();
+    searching.value = false;
+    searchResults.value = [];
+    searchQuery.value = '';
     await refreshDetail();
   }
 
