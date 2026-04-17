@@ -20,6 +20,7 @@ export interface AdminOrdersFilter {
   onlyUploaded: boolean;
   onlyCsvRemoved: boolean;
   q: string;
+  checkStatus: CheckStatus | '';
 }
 
 export const useAdminStore = defineStore('admin', () => {
@@ -29,7 +30,7 @@ export const useAdminStore = defineStore('admin', () => {
 
   const years = ref<AdminYearStat[]>([]);
   const currentYear = ref<number>(2021);
-  const filters = ref<AdminOrdersFilter>({ onlyUploaded: false, onlyCsvRemoved: false, q: '' });
+  const filters = ref<AdminOrdersFilter>({ onlyUploaded: false, onlyCsvRemoved: false, q: '', checkStatus: '' });
   const page = ref<number>(1);
   const pageSize = ref<number>(50);
   const orderList = ref<AdminOrderList | null>(null);
@@ -163,6 +164,7 @@ export const useAdminStore = defineStore('admin', () => {
           onlyUploaded: filters.value.onlyUploaded,
           onlyCsvRemoved: filters.value.onlyCsvRemoved,
           q: filters.value.q,
+          checkStatus: filters.value.checkStatus,
         },
         signal,
       );

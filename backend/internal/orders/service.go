@@ -453,7 +453,7 @@ ORDER BY o.year ASC`
 	return items, nil
 }
 
-func (s *Service) AdminList(ctx context.Context, year, page, size int, onlyUploaded, onlyCSVRemoved bool, query string) (AdminList, error) {
+func (s *Service) AdminList(ctx context.Context, year, page, size int, onlyUploaded, onlyCSVRemoved bool, query, checkStatus string) (AdminList, error) {
 	if !ValidYear(year) {
 		return AdminList{}, apierror.ErrYearNotFound
 	}
@@ -474,6 +474,11 @@ func (s *Service) AdminList(ctx context.Context, year, page, size int, onlyUploa
 	}
 	if onlyCSVRemoved {
 		where = append(where, `o.csv_present = 0 AND EXISTS (SELECT 1 FROM uploads u WHERE u.year = o.year AND u.order_no = o.order_no)`)
+	}
+	switch checkStatus {
+	case "未检查", "已检查", "错误":
+		where = append(where, `COALESCE(o.check_status, '未检查') = ?`)
+		args = append(args, checkStatus)
 	}
 	query = strings.TrimSpace(query)
 	if r := []rune(query); len(r) > 64 {

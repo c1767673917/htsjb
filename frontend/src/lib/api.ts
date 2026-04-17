@@ -315,7 +315,14 @@ export const adminApi = {
   },
   orders(
     year: number,
-    params: { page: number; size: number; onlyUploaded?: boolean; onlyCsvRemoved?: boolean; q?: string },
+    params: {
+      page: number;
+      size: number;
+      onlyUploaded?: boolean;
+      onlyCsvRemoved?: boolean;
+      q?: string;
+      checkStatus?: CheckStatus | '';
+    },
     signal?: AbortSignal,
   ) {
     return request<AdminOrderList>(`/api/admin/${year}/orders`, {
@@ -325,6 +332,7 @@ export const adminApi = {
         onlyUploaded: params.onlyUploaded ? true : undefined,
         onlyCsvRemoved: params.onlyCsvRemoved ? true : undefined,
         q: params.q && params.q.trim().length > 0 ? params.q.trim() : undefined,
+        checkStatus: params.checkStatus ? params.checkStatus : undefined,
       },
       signal,
     });

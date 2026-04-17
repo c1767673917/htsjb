@@ -210,8 +210,9 @@ func (s *Service) handleListOrders(c *gin.Context) {
 	onlyUploaded := c.Query("onlyUploaded") == "true"
 	onlyCSVRemoved := c.Query("onlyCsvRemoved") == "true"
 	searchQuery := strings.TrimSpace(c.Query("q"))
+	checkStatus := strings.TrimSpace(c.Query("checkStatus"))
 
-	result, err := s.orders.AdminList(c.Request.Context(), year, page, size, onlyUploaded, onlyCSVRemoved, searchQuery)
+	result, err := s.orders.AdminList(c.Request.Context(), year, page, size, onlyUploaded, onlyCSVRemoved, searchQuery, checkStatus)
 	if err != nil {
 		writeError(c, apierror.Wrap(err, http.StatusInternalServerError, "INTERNAL", "读取订单列表失败"))
 		return

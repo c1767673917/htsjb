@@ -156,6 +156,10 @@ function onToggleUploaded(e: Event) {
 function onToggleCsvRemoved(e: Event) {
   store.setFilters({ onlyCsvRemoved: (e.target as HTMLInputElement).checked });
 }
+function onCheckStatusChange(e: Event) {
+  const v = (e.target as HTMLSelectElement).value as CheckStatus | '';
+  store.setFilters({ checkStatus: v });
+}
 
 const queryInput = ref<string>(filters.value.q ?? '');
 let queryTimer: ReturnType<typeof setTimeout> | null = null;
@@ -247,6 +251,15 @@ function gotoPage(p: number) {
       </div>
       <label><input type="checkbox" :checked="filters.onlyUploaded" @change="onToggleUploaded" /> 仅看已上传</label>
       <label><input type="checkbox" :checked="filters.onlyCsvRemoved" @change="onToggleCsvRemoved" /> 仅看 CSV 已移除</label>
+      <label class="admin-select-label">
+        检查状态
+        <select class="input admin-status-select" :value="filters.checkStatus" @change="onCheckStatusChange">
+          <option value="">全部</option>
+          <option value="未检查">未检查</option>
+          <option value="已检查">已检查</option>
+          <option value="错误">错误</option>
+        </select>
+      </label>
       <span v-if="orderList" class="muted" style="margin-left:auto; font-size: var(--font-sm)">
         共 {{ orderList.total }} 条
       </span>
@@ -410,6 +423,18 @@ function gotoPage(p: number) {
   display: flex;
   align-items: center;
   justify-content: center;
+}
+
+.admin-select-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.admin-status-select {
+  width: auto;
+  min-width: 96px;
+  padding: 4px 8px;
+  height: auto;
 }
 
 .row-actions {
