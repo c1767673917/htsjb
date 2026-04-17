@@ -15,7 +15,7 @@ import (
 	"product-collection-form/backend/internal/config"
 )
 
-const currentUserVersion = 2
+const currentUserVersion = 3
 
 const driverName = "sqlite-app"
 
@@ -146,6 +146,17 @@ func Migrate(ctx context.Context, conn *sqlx.DB) error {
 		for _, stmt := range stmts {
 			if _, err := tx.ExecContext(ctx, stmt); err != nil {
 				return fmt.Errorf("migrate schema v2: %w", err)
+			}
+		}
+	}
+
+	if version < 3 {
+		stmts := []string{
+			`ALTER TABLE orders ADD COLUMN check_status TEXT NOT NULL DEFAULT '未检查' CHECK (check_status IN ('未检查','已检查','错误'))`,
+		}
+		for _, stmt := range stmts {
+			if _, err := tx.ExecContext(ctx, stmt); err != nil {
+				return fmt.Errorf("migrate schema v3: %w", err)
 			}
 		}
 	}

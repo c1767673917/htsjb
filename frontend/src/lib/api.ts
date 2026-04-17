@@ -204,11 +204,14 @@ export interface UploadedPhoto {
   operator?: string;
 }
 
+export type CheckStatus = '未检查' | '已检查' | '错误';
+
 export interface OrderDetail {
   orderNo: string;
   year: number;
   customer: string;
   csvPresent: boolean;
+  checkStatus: CheckStatus;
   lines: OrderLine[];
   uploads: {
     合同: UploadedPhoto[];
@@ -237,6 +240,7 @@ export interface AdminOrderRow {
   counts: { 合同: number; 发票: number; 发货单: number };
   lastUploadAt: string | null;
   csvRemoved: boolean;
+  checkStatus: CheckStatus;
   mergedPdfStale?: boolean;
   operators: string[];
 }
@@ -278,6 +282,13 @@ export const collectionApi = {
       multipart: true,
     });
   },
+  deleteOwnPhoto(year: number, orderNo: string, id: number, operator: string) {
+    const enc = encodeURIComponent(orderNo);
+    return request<{ ok: true; mergedPdfStale?: boolean }>(
+      `/api/y/${year}/orders/${enc}/uploads/${id}`,
+      { method: 'DELETE', query: { operator } },
+    );
+  },
 };
 
 /* Admin endpoints. Every state-changing call requires the CSRF token from
@@ -304,7 +315,7 @@ export const adminApi = {
   },
   orders(
     year: number,
-    params: { page: number; size: number; onlyUploaded?: boolean; onlyCsvRemoved?: boolean },
+    params: { page: number; size: number; onlyUploaded?: boolean; onlyCsvRemoved?: boolean; q?: string },
     signal?: AbortSignal,
   ) {
     return request<AdminOrderList>(`/api/admin/${year}/orders`, {
@@ -313,6 +324,7 @@ export const adminApi = {
         size: params.size,
         onlyUploaded: params.onlyUploaded ? true : undefined,
         onlyCsvRemoved: params.onlyCsvRemoved ? true : undefined,
+        q: params.q && params.q.trim().length > 0 ? params.q.trim() : undefined,
       },
       signal,
     });
@@ -349,6 +361,13 @@ export const adminApi = {
     return request<{ ok: true; pages: number }>(
       `/api/admin/${year}/orders/${enc}/rebuild-pdf`,
       { method: 'POST', adminCsrf: csrf },
+    );
+  },
+  setCheckStatus(year: number, orderNo: string, status: CheckStatus, csrf: string) {
+    const enc = encodeURIComponent(orderNo);
+    return request<{ ok: true; checkStatus: CheckStatus }>(
+      `/api/admin/${year}/orders/${enc}/check`,
+      { method: 'POST', adminCsrf: csrf, body: { status } },
     );
   },
 };

@@ -6,19 +6,22 @@
 // of the viewport regardless of how long this panel scrolls.
 import { computed } from 'vue';
 import UploadCard from './UploadCard.vue';
-import type { OrderDetail } from '@/lib/api';
+import type { OrderDetail, UploadedPhoto } from '@/lib/api';
 import { KINDS, type StagedPhoto, type UploadKind } from '@/stores/collection';
 
 const props = defineProps<{
   detail: OrderDetail;
   staged: Record<UploadKind, StagedPhoto[]>;
   mergedPdfStale?: boolean;
+  currentOperator?: string;
 }>();
 
 const emit = defineEmits<{
   (e: 'close'): void;
   (e: 'add', kind: UploadKind, files: File[]): void;
   (e: 'remove-staged', kind: UploadKind, id: string): void;
+  (e: 'user-delete', photo: UploadedPhoto): void;
+  (e: 'preview', payload: { src: string; alt: string }): void;
 }>();
 
 const cardTitles: Record<UploadKind, string> = {
@@ -93,8 +96,11 @@ const pillClass = computed(() =>
         :title="cardTitles[k]"
         :server-photos="detail.uploads[k]"
         :staged-photos="staged[k]"
+        :current-operator="currentOperator"
         @add="(files) => emit('add', k, files)"
         @remove-staged="(id) => emit('remove-staged', k, id)"
+        @user-delete="(photo) => emit('user-delete', photo)"
+        @preview="(payload) => emit('preview', payload)"
       />
     </div>
   </article>

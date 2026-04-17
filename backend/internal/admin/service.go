@@ -8,7 +8,6 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
-	"database/sql"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -56,19 +55,6 @@ type loginBucket struct {
 	Attempts []time.Time
 }
 
-type renamePlan struct {
-	ID       int64
-	Original string
-	Temp     string
-	Final    string
-	Seq      int
-	Filename string
-}
-
-type deleteUploadResult struct {
-	MergedPDFStale bool `json:"mergedPdfStale"`
-}
-
 type yearExportOrder struct {
 	OrderNo       string
 	CustomerClean string
@@ -108,6 +94,7 @@ func (s *Service) RegisterRoutes(group *gin.RouterGroup) {
 	mutating.Use(s.requireCSRF)
 	mutating.POST("/logout", s.handleLogout)
 	mutating.POST("/:year/orders/:orderNo/rebuild-pdf", s.handleRebuildPDF)
+	mutating.POST("/:year/orders/:orderNo/check", s.handleSetCheckStatus)
 	mutating.DELETE("/:year/orders/:orderNo/uploads/:id", s.handleDeleteUpload)
 	mutating.DELETE("/:year/orders/:orderNo", s.handleResetOrder)
 }
@@ -222,8 +209,9 @@ func (s *Service) handleListOrders(c *gin.Context) {
 	}
 	onlyUploaded := c.Query("onlyUploaded") == "true"
 	onlyCSVRemoved := c.Query("onlyCsvRemoved") == "true"
+	searchQuery := strings.TrimSpace(c.Query("q"))
 
-	result, err := s.orders.AdminList(c.Request.Context(), year, page, size, onlyUploaded, onlyCSVRemoved)
+	result, err := s.orders.AdminList(c.Request.Context(), year, page, size, onlyUploaded, onlyCSVRemoved, searchQuery)
 	if err != nil {
 		writeError(c, apierror.Wrap(err, http.StatusInternalServerError, "INTERNAL", "读取订单列表失败"))
 		return
@@ -330,12 +318,37 @@ func (s *Service) handleDeleteUpload(c *gin.Context) {
 		return
 	}
 
-	result, err := s.deleteUpload(c.Request.Context(), year, orderNo, uploadID)
+	result, err := s.uploads.DeleteUpload(c.Request.Context(), year, orderNo, uploadID)
 	if err != nil {
 		writeError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"ok": true, "mergedPdfStale": result.MergedPDFStale})
+}
+
+func (s *Service) handleSetCheckStatus(c *gin.Context) {
+	year, err := orders.ParseAndValidateYear(c.Param("year"))
+	if err != nil {
+		writeError(c, err)
+		return
+	}
+	var req struct {
+		Status string `json:"status"`
+	}
+	if err := decodeStrictJSON(c.Request.Body, &req); err != nil {
+		writeError(c, apierror.Wrap(err, http.StatusBadRequest, "BAD_REQUEST", "请求格式错误"))
+		return
+	}
+	status := strings.TrimSpace(req.Status)
+	if !orders.ValidCheckStatus(status) {
+		writeError(c, apierror.Wrap(nil, http.StatusBadRequest, "BAD_REQUEST", "status 必须为 未检查/已检查/错误"))
+		return
+	}
+	if err := s.orders.SetCheckStatus(c.Request.Context(), year, c.Param("orderNo"), status); err != nil {
+		writeError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true, "checkStatus": status})
 }
 
 func (s *Service) handleResetOrder(c *gin.Context) {
@@ -456,160 +469,6 @@ func (s *Service) handleYearExport(c *gin.Context) {
 		slog.WarnContext(c.Request.Context(), "close year export zip failed", "year", year, "error", err)
 	}
 	metrics.Default.IncZIPExports()
-}
-
-func (s *Service) deleteUpload(ctx context.Context, year int, orderNo string, uploadID int64) (deleteUploadResult, error) {
-	release, err := s.storage.Acquire(ctx, year, orderNo)
-	if err != nil {
-		return deleteUploadResult{}, err
-	}
-	defer release()
-
-	type uploadRecord struct {
-		ID       int64  `db:"id"`
-		Kind     string `db:"kind"`
-		Seq      int    `db:"seq"`
-		Filename string `db:"filename"`
-	}
-	var target uploadRecord
-	if err := s.db.GetContext(ctx, &target, `SELECT id, kind, seq, filename FROM uploads WHERE id = ? AND year = ? AND order_no = ?`, uploadID, year, orderNo); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return deleteUploadResult{}, apierror.ErrFileNotFound
-		}
-		return deleteUploadResult{}, apierror.Wrap(err, http.StatusInternalServerError, "INTERNAL", "读取上传记录失败")
-	}
-
-	customerClean, err := s.orders.CustomerClean(ctx, year, orderNo)
-	if err != nil {
-		return deleteUploadResult{}, err
-	}
-	orderDir, err := s.storage.OrderDir(year, orderNo)
-	if err != nil {
-		return deleteUploadResult{}, err
-	}
-	txID, err := randomHex(8)
-	if err != nil {
-		return deleteUploadResult{}, apierror.Wrap(err, http.StatusInternalServerError, "INTERNAL", "创建事务标识失败")
-	}
-	pdfPath := filepath.Join(orderDir, storage.MergedPDFName(orderNo, customerClean))
-	bakPath := pdfPath + ".bak-" + txID
-	backupTaken := false
-	if _, err := os.Stat(pdfPath); err == nil {
-		if err := renameAndSync(pdfPath, bakPath); err != nil {
-			return deleteUploadResult{}, apierror.Wrap(err, http.StatusInternalServerError, "INTERNAL", "备份 PDF 失败")
-		}
-		backupTaken = true
-	}
-
-	trashPath := filepath.Join(s.storage.TrashRoot(), fmt.Sprintf("%d-%s-%d-%s.jpg", year, orderNo, uploadID, txID))
-	originalPath, err := s.storage.ValidateOrderFilePath(year, orderNo, target.Filename)
-	if err != nil {
-		s.restorePDF(pdfPath, bakPath, backupTaken)
-		return deleteUploadResult{}, err
-	}
-	if err := os.MkdirAll(filepath.Dir(trashPath), 0o700); err != nil {
-		s.restorePDF(pdfPath, bakPath, backupTaken)
-		return deleteUploadResult{}, apierror.Wrap(err, http.StatusInternalServerError, "INTERNAL", "创建回收目录失败")
-	}
-	if err := renameAndSync(originalPath, trashPath); err != nil {
-		s.restorePDF(pdfPath, bakPath, backupTaken)
-		return deleteUploadResult{}, apierror.Wrap(err, http.StatusInternalServerError, "INTERNAL", "移动待删除文件失败")
-	}
-
-	var remaining []struct {
-		ID       int64  `db:"id"`
-		Seq      int    `db:"seq"`
-		Filename string `db:"filename"`
-	}
-	if err := s.db.SelectContext(ctx, &remaining, `
-SELECT id, seq, filename FROM uploads
-WHERE year = ? AND order_no = ? AND kind = ? AND id <> ?
-ORDER BY seq ASC, id ASC`, year, orderNo, target.Kind, uploadID); err != nil {
-		s.restoreMovedFile(trashPath, originalPath)
-		s.restorePDF(pdfPath, bakPath, backupTaken)
-		return deleteUploadResult{}, apierror.Wrap(err, http.StatusInternalServerError, "INTERNAL", "查询重排计划失败")
-	}
-
-	plans := make([]renamePlan, 0, len(remaining))
-	for idx, row := range remaining {
-		desiredSeq := idx + 1
-		desiredName := fmt.Sprintf("%s-%s-%s-%02d.jpg", orderNo, customerClean, target.Kind, desiredSeq)
-		if row.Seq == desiredSeq && row.Filename == desiredName {
-			continue
-		}
-		origPath, err := s.storage.ValidateOrderFilePath(year, orderNo, row.Filename)
-		if err != nil {
-			s.restoreMovedFile(trashPath, originalPath)
-			s.restorePDF(pdfPath, bakPath, backupTaken)
-			return deleteUploadResult{}, err
-		}
-		plans = append(plans, renamePlan{
-			ID:       row.ID,
-			Original: origPath,
-			Temp:     filepath.Join(orderDir, "."+filepath.Base(origPath)+".rename-"+txID),
-			Final:    filepath.Join(orderDir, desiredName),
-			Seq:      desiredSeq,
-			Filename: desiredName,
-		})
-	}
-
-	for _, plan := range plans {
-		if err := renameAndSync(plan.Original, plan.Temp); err != nil {
-			s.rollbackRenamePlans(plans)
-			s.restoreMovedFile(trashPath, originalPath)
-			s.restorePDF(pdfPath, bakPath, backupTaken)
-			return deleteUploadResult{}, apierror.Wrap(err, http.StatusInternalServerError, "INTERNAL", "第一阶段重命名失败")
-		}
-	}
-	for _, plan := range plans {
-		if err := renameAndSync(plan.Temp, plan.Final); err != nil {
-			s.rollbackRenamePlans(plans)
-			s.restoreMovedFile(trashPath, originalPath)
-			s.restorePDF(pdfPath, bakPath, backupTaken)
-			return deleteUploadResult{}, apierror.Wrap(err, http.StatusInternalServerError, "INTERNAL", "第二阶段重命名失败")
-		}
-	}
-
-	tx, err := s.db.BeginTxx(ctx, nil)
-	if err != nil {
-		s.rollbackRenamePlans(plans)
-		s.restoreMovedFile(trashPath, originalPath)
-		s.restorePDF(pdfPath, bakPath, backupTaken)
-		return deleteUploadResult{}, apierror.Wrap(err, http.StatusInternalServerError, "INTERNAL", "创建删除事务失败")
-	}
-	defer tx.Rollback()
-
-	if _, err := tx.ExecContext(ctx, `DELETE FROM uploads WHERE id = ?`, uploadID); err != nil {
-		s.rollbackRenamePlans(plans)
-		s.restoreMovedFile(trashPath, originalPath)
-		s.restorePDF(pdfPath, bakPath, backupTaken)
-		return deleteUploadResult{}, apierror.Wrap(err, http.StatusInternalServerError, "INTERNAL", "删除上传记录失败")
-	}
-	for _, plan := range plans {
-		if _, err := tx.ExecContext(ctx, `UPDATE uploads SET seq = ?, filename = ? WHERE id = ?`, plan.Seq, filepath.Base(plan.Final), plan.ID); err != nil {
-			s.rollbackRenamePlans(plans)
-			s.restoreMovedFile(trashPath, originalPath)
-			s.restorePDF(pdfPath, bakPath, backupTaken)
-			return deleteUploadResult{}, apierror.Wrap(err, http.StatusInternalServerError, "INTERNAL", "更新重排结果失败")
-		}
-	}
-	if err := tx.Commit(); err != nil {
-		s.rollbackRenamePlans(plans)
-		s.restoreMovedFile(trashPath, originalPath)
-		s.restorePDF(pdfPath, bakPath, backupTaken)
-		return deleteUploadResult{}, apierror.Wrap(err, http.StatusInternalServerError, "INTERNAL", "提交删除事务失败")
-	}
-
-	if _, err := s.uploads.RebuildMergedPDF(ctx, year, orderNo); err != nil {
-		s.restorePDF(pdfPath, bakPath, backupTaken)
-		slog.WarnContext(ctx, "delete upload left merged pdf stale", "year", year, "order_no", orderNo, "upload_id", uploadID, "error", err)
-		return deleteUploadResult{MergedPDFStale: true}, nil
-	}
-	if backupTaken {
-		_ = os.Remove(bakPath)
-	}
-	go os.Remove(trashPath)
-	return deleteUploadResult{}, nil
 }
 
 func (s *Service) resetOrder(ctx context.Context, year int, orderNo string) error {
@@ -766,35 +625,6 @@ func (s *Service) allowLoginAttempt(ip string) bool {
 	}
 	bucket.Attempts = append(bucket.Attempts, now)
 	return true
-}
-
-func (s *Service) restoreMovedFile(from, to string) {
-	if _, err := os.Stat(from); err == nil {
-		_ = renameAndSync(from, to)
-	}
-}
-
-func (s *Service) rollbackRenamePlans(plans []renamePlan) {
-	for i := len(plans) - 1; i >= 0; i-- {
-		plan := plans[i]
-		if _, err := os.Stat(plan.Final); err == nil {
-			_ = renameAndSync(plan.Final, plan.Original)
-			continue
-		}
-		if _, err := os.Stat(plan.Temp); err == nil {
-			_ = renameAndSync(plan.Temp, plan.Original)
-		}
-	}
-}
-
-func (s *Service) restorePDF(finalPath, bakPath string, backupTaken bool) {
-	if !backupTaken {
-		return
-	}
-	if _, err := os.Stat(bakPath); err == nil {
-		_ = os.Remove(finalPath)
-		_ = renameAndSync(bakPath, finalPath)
-	}
 }
 
 func writeZipEntry(ctx context.Context, zw *zip.Writer, name, source string) error {

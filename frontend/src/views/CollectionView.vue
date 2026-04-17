@@ -5,13 +5,14 @@
 //   - min-height 100dvh with safe-area padding
 //   - sticky header + sticky submit share the viewport so both remain
 //     visible on a 667px viewport (NFR-UX-2)
-import { onBeforeUnmount, onMounted, watch } from 'vue';
+import { onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { storeToRefs } from 'pinia';
 import ProgressBlock from '@/components/ProgressBlock.vue';
 import SearchBar from '@/components/SearchBar.vue';
 import OrderDetailPanel from '@/components/OrderDetailPanel.vue';
+import ImageLightbox from '@/components/ImageLightbox.vue';
 import { useCollectionStore, type UploadKind } from '@/stores/collection';
-import type { SearchItem } from '@/lib/api';
+import type { SearchItem, UploadedPhoto } from '@/lib/api';
 
 const props = defineProps<{ year: number; operator?: string }>();
 
@@ -65,6 +66,24 @@ function onRemoveStaged(kind: UploadKind, id: string) {
 async function onSubmit() {
   await store.submit();
 }
+
+const previewSrc = ref<string | null>(null);
+const previewAlt = ref<string>('');
+
+function onPreview(payload: { src: string; alt: string }) {
+  previewSrc.value = payload.src;
+  previewAlt.value = payload.alt;
+}
+
+function closePreview() {
+  previewSrc.value = null;
+  previewAlt.value = '';
+}
+
+async function onUserDelete(photo: UploadedPhoto) {
+  if (!window.confirm(`确定删除该图片？\n${photo.filename}`)) return;
+  await store.deleteServerPhoto(photo.id);
+}
 </script>
 
 <template>
@@ -98,9 +117,12 @@ async function onSubmit() {
           :detail="currentDetail"
           :staged="staged"
           :merged-pdf-stale="lastMergedPdfStale"
+          :current-operator="operator"
           @close="store.closeDetail()"
           @add="onAdd"
           @remove-staged="onRemoveStaged"
+          @user-delete="onUserDelete"
+          @preview="onPreview"
         />
       </template>
       <template v-else>
@@ -109,7 +131,7 @@ async function onSubmit() {
           <ol class="muted" style="padding-left: 20px; margin: 0; line-height: 1.7">
             <li>在顶部搜索框输入 单据编号 的任意 2 位以上字符。</li>
             <li>点击结果行打开订单详情。</li>
-            <li>依次为「合同」「发票」「发货单」拍照或从相册选择图片。</li>
+            <li>依次为「合同」「发货单」「发票」拍照或从相册选择图片。</li>
             <li>点击底部「提交」一次性上传本次新增的图片。</li>
           </ol>
         </section>
@@ -131,5 +153,7 @@ async function onSubmit() {
         </button>
       </div>
     </footer>
+
+    <ImageLightbox :src="previewSrc" :alt="previewAlt" @close="closePreview" />
   </main>
 </template>

@@ -41,6 +41,7 @@ function makeRow(orderNo: string, customer = ''): AdminOrderRow {
     counts: { 合同: 0, 发票: 0, 发货单: 0 },
     lastUploadAt: null,
     csvRemoved: false,
+    checkStatus: '未检查',
     operators: [],
   };
 }
@@ -51,6 +52,7 @@ function makeDetail(orderNo: string): OrderDetail {
     year: 2021,
     customer: '客户',
     csvPresent: true,
+    checkStatus: '未检查',
     lines: [],
     uploads: { 合同: [], 发票: [], 发货单: [] },
   };

@@ -11,6 +11,7 @@ import {
   type AdminOrderList,
   type AdminOrderRow,
   type AdminYearStat,
+  type CheckStatus,
   type OrderDetail,
 } from '@/lib/api';
 import { useUiStore } from './ui';
@@ -18,6 +19,7 @@ import { useUiStore } from './ui';
 export interface AdminOrdersFilter {
   onlyUploaded: boolean;
   onlyCsvRemoved: boolean;
+  q: string;
 }
 
 export const useAdminStore = defineStore('admin', () => {
@@ -27,7 +29,7 @@ export const useAdminStore = defineStore('admin', () => {
 
   const years = ref<AdminYearStat[]>([]);
   const currentYear = ref<number>(2021);
-  const filters = ref<AdminOrdersFilter>({ onlyUploaded: false, onlyCsvRemoved: false });
+  const filters = ref<AdminOrdersFilter>({ onlyUploaded: false, onlyCsvRemoved: false, q: '' });
   const page = ref<number>(1);
   const pageSize = ref<number>(50);
   const orderList = ref<AdminOrderList | null>(null);
@@ -160,6 +162,7 @@ export const useAdminStore = defineStore('admin', () => {
           size: pageSize.value,
           onlyUploaded: filters.value.onlyUploaded,
           onlyCsvRemoved: filters.value.onlyCsvRemoved,
+          q: filters.value.q,
         },
         signal,
       );
@@ -241,6 +244,28 @@ export const useAdminStore = defineStore('admin', () => {
     }
   }
 
+  async function setCheckStatus(row: AdminOrderRow, status: CheckStatus): Promise<boolean> {
+    const ui = useUiStore();
+    try {
+      await adminApi.setCheckStatus(currentYear.value, row.orderNo, status, csrfToken.value);
+      if (orderList.value) {
+        const target = orderList.value.items.find((it) => it.orderNo === row.orderNo);
+        if (target) target.checkStatus = status;
+      }
+      if (currentRow.value && currentRow.value.orderNo === row.orderNo) {
+        currentRow.value.checkStatus = status;
+      }
+      if (currentDetail.value && currentDetail.value.orderNo === row.orderNo) {
+        currentDetail.value.checkStatus = status;
+      }
+      ui.success(`已标记为${status}`);
+      return true;
+    } catch (err) {
+      ui.error(err instanceof ApiError ? err.message : '更新检查状态失败');
+      return false;
+    }
+  }
+
   async function rebuildPdf(): Promise<boolean> {
     const ui = useUiStore();
     if (!currentRow.value) return false;
@@ -304,6 +329,7 @@ export const useAdminStore = defineStore('admin', () => {
     deletePhoto,
     resetOrder,
     rebuildPdf,
+    setCheckStatus,
     refreshCurrentRow,
   };
 });

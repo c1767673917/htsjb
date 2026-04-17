@@ -44,6 +44,7 @@ function makeDetail(overrides: Partial<OrderDetail> = {}): OrderDetail {
     year: 2021,
     customer: '哈尔滨金诺食品有限公司',
     csvPresent: true,
+    checkStatus: '未检查',
     lines: [],
     uploads: { 合同: [], 发票: [], 发货单: [] },
     ...overrides,

@@ -55,6 +55,7 @@ func (r *Router) Engine() *gin.Engine {
 	yearGroup.GET("/search", r.handleSearch)
 	yearGroup.GET("/orders/:orderNo", r.handleDetail)
 	yearGroup.POST("/orders/:orderNo/uploads", r.uploads.HandleSubmit)
+	yearGroup.DELETE("/orders/:orderNo/uploads/:id", r.uploads.HandleUserDelete)
 
 	adminGroup := api.Group("/admin")
 	r.admin.RegisterRoutes(adminGroup)

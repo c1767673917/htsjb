@@ -2,12 +2,12 @@
 // Back office: year tabs 2021..2025, filter toggles, paginated table, side
 // panel for detail. Every destructive action requires a confirm dialog
 // (FR-ADMIN-OVERWRITE) and sends the CSRF header via the admin store.
-import { computed, onMounted, watch } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { storeToRefs } from 'pinia';
 import { useRouter } from 'vue-router';
 import UploadCard from '@/components/UploadCard.vue';
 import { useAdminStore } from '@/stores/admin';
-import { adminApi, type AdminOrderRow, type UploadedPhoto } from '@/lib/api';
+import { adminApi, type AdminOrderRow, type CheckStatus, type UploadedPhoto } from '@/lib/api';
 import { KINDS, type UploadKind } from '@/stores/collection';
 import { useUiStore } from '@/stores/ui';
 
@@ -28,6 +28,7 @@ const {
 } = storeToRefs(store);
 
 onMounted(async () => {
+  document.addEventListener('click', closeCheckMenu);
   await store.loadYears();
   await store.loadOrders();
 });
@@ -61,6 +62,38 @@ function pickYear(y: number) {
 
 function onRowClick(row: AdminOrderRow) {
   void store.openRow(row);
+}
+
+const checkMenuFor = ref<string | null>(null);
+
+function checkStatusClass(status: CheckStatus): string {
+  if (status === '已检查') return 'badge check-badge check-ok';
+  if (status === '错误') return 'badge check-badge check-error';
+  return 'badge badge-muted check-badge';
+}
+
+async function onCheckClick(row: AdminOrderRow) {
+  void store.openRow(row);
+  if (row.checkStatus === '未检查') {
+    await store.setCheckStatus(row, '已检查');
+    checkMenuFor.value = null;
+  } else {
+    checkMenuFor.value = checkMenuFor.value === row.orderNo ? null : row.orderNo;
+  }
+}
+
+async function pickCheckStatus(row: AdminOrderRow, status: CheckStatus) {
+  checkMenuFor.value = null;
+  if (row.checkStatus === status) return;
+  await store.setCheckStatus(row, status);
+}
+
+function closeCheckMenu() {
+  checkMenuFor.value = null;
+}
+
+function otherStatuses(current: CheckStatus): CheckStatus[] {
+  return (['未检查', '已检查', '错误'] as CheckStatus[]).filter((s) => s !== current);
 }
 
 function formatDate(ts: string | null): string {
@@ -124,6 +157,38 @@ function onToggleCsvRemoved(e: Event) {
   store.setFilters({ onlyCsvRemoved: (e.target as HTMLInputElement).checked });
 }
 
+const queryInput = ref<string>(filters.value.q ?? '');
+let queryTimer: ReturnType<typeof setTimeout> | null = null;
+
+watch(
+  () => filters.value.q,
+  (v) => {
+    if ((v ?? '') !== queryInput.value) queryInput.value = v ?? '';
+  },
+);
+
+function commitQuery(v: string) {
+  if ((filters.value.q ?? '') !== v) store.setFilters({ q: v });
+}
+
+function onQueryInput(e: Event) {
+  const v = (e.target as HTMLInputElement).value;
+  queryInput.value = v;
+  if (queryTimer) clearTimeout(queryTimer);
+  queryTimer = setTimeout(() => commitQuery(v.trim()), 250);
+}
+
+function onQueryClear() {
+  if (queryTimer) clearTimeout(queryTimer);
+  queryInput.value = '';
+  commitQuery('');
+}
+
+onBeforeUnmount(() => {
+  if (queryTimer) clearTimeout(queryTimer);
+  document.removeEventListener('click', closeCheckMenu);
+});
+
 function gotoPage(p: number) {
   store.setPage(p);
 }
@@ -158,6 +223,28 @@ function gotoPage(p: number) {
     </nav>
 
     <div class="admin-filters">
+      <div class="admin-search">
+        <input
+          class="input"
+          type="search"
+          inputmode="search"
+          autocomplete="off"
+          autocapitalize="off"
+          spellcheck="false"
+          placeholder="搜索录入人 / 单据编号 / 客户"
+          :value="queryInput"
+          @input="onQueryInput"
+        />
+        <button
+          v-if="queryInput.length > 0"
+          type="button"
+          class="clear-btn"
+          aria-label="清空搜索"
+          @click="onQueryClear"
+        >
+          ×
+        </button>
+      </div>
       <label><input type="checkbox" :checked="filters.onlyUploaded" @change="onToggleUploaded" /> 仅看已上传</label>
       <label><input type="checkbox" :checked="filters.onlyCsvRemoved" @change="onToggleCsvRemoved" /> 仅看 CSV 已移除</label>
       <span v-if="orderList" class="muted" style="margin-left:auto; font-size: var(--font-sm)">
@@ -199,7 +286,30 @@ function gotoPage(p: number) {
               <td class="truncate" style="max-width: 140px">{{ operatorsText(row) }}</td>
               <td>{{ formatDate(row.lastUploadAt) }}</td>
               <td>
-                <button type="button" class="btn btn-ghost tap" @click.stop="onRowClick(row)">查看</button>
+                <div class="row-actions" @click.stop>
+                  <button type="button" class="btn btn-ghost tap" @click="onRowClick(row)">查看</button>
+                  <div class="check-action">
+                    <button
+                      type="button"
+                      :class="['btn', 'tap', 'check-btn', row.checkStatus !== '未检查' ? 'btn-ghost' : 'btn-primary']"
+                      @click="onCheckClick(row)"
+                    >
+                      <span :class="checkStatusClass(row.checkStatus)">{{ row.checkStatus }}</span>
+                    </button>
+                    <div v-if="checkMenuFor === row.orderNo" class="check-menu" role="menu">
+                      <button
+                        v-for="s in otherStatuses(row.checkStatus)"
+                        :key="s"
+                        type="button"
+                        class="check-menu-item"
+                        role="menuitem"
+                        @click="pickCheckStatus(row, s)"
+                      >
+                        改为{{ s }}
+                      </button>
+                    </div>
+                  </div>
+                </div>
               </td>
             </tr>
           </tbody>
@@ -216,7 +326,10 @@ function gotoPage(p: number) {
       <aside v-if="currentRow" class="admin-side-panel" aria-label="订单详情">
         <header style="display:flex; justify-content:space-between; align-items:center; gap:var(--space-3)">
           <div>
-            <div style="font-weight:600">{{ currentRow.orderNo }}</div>
+            <div style="font-weight:600; display:flex; align-items:center; gap:8px">
+              <span>{{ currentRow.orderNo }}</span>
+              <span :class="checkStatusClass(currentRow.checkStatus)">{{ currentRow.checkStatus }}</span>
+            </div>
             <div class="muted" style="font-size: var(--font-sm)">{{ currentRow.customer || '未知客户' }}</div>
           </div>
           <button type="button" class="btn btn-ghost tap" @click="store.closeRow()">关闭</button>
@@ -272,3 +385,82 @@ function gotoPage(p: number) {
     </div>
   </div>
 </template>
+
+<style scoped>
+.admin-search {
+  position: relative;
+  flex: 1 1 220px;
+  min-width: 180px;
+  max-width: 320px;
+}
+.admin-search .input {
+  padding-right: 32px;
+}
+.admin-search .clear-btn {
+  position: absolute;
+  right: 4px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--color-text-muted);
+  font-size: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.row-actions {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+}
+.check-action {
+  position: relative;
+}
+.check-btn {
+  padding: 4px 10px;
+  min-height: 32px;
+}
+.check-badge {
+  font-size: var(--font-sm);
+  line-height: 1.2;
+}
+.check-ok {
+  background: #d4f8d4;
+  color: #166534;
+}
+.check-error {
+  background: #fde2e2;
+  color: #991b1b;
+}
+.check-menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 4px);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-sm);
+  min-width: 120px;
+  z-index: 20;
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+}
+.check-menu-item {
+  padding: 8px 12px;
+  background: transparent;
+  border: none;
+  text-align: left;
+  font-size: var(--font-sm);
+  color: var(--color-text);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.check-menu-item:hover {
+  background: var(--color-surface-alt);
+}
+</style>

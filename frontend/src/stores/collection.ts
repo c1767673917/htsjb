@@ -19,13 +19,13 @@ import { useUiStore } from './ui';
 
 export type UploadKind = '合同' | '发票' | '发货单';
 
-export const KINDS: UploadKind[] = ['合同', '发票', '发货单'];
+export const KINDS: UploadKind[] = ['合同', '发货单', '发票'];
 export const KIND_FIELD: Record<UploadKind, string> = {
   合同: 'contract[]',
   发票: 'invoice[]',
   发货单: 'delivery[]',
 };
-export const PER_KIND_CAP = 9;
+export const PER_KIND_CAP = 50;
 
 /** Staged (not yet submitted) photo in the UI. */
 export interface StagedPhoto {
@@ -236,6 +236,30 @@ export const useCollectionStore = defineStore('collection', () => {
     }
   }
 
+  async function deleteServerPhoto(id: number): Promise<boolean> {
+    const ui = useUiStore();
+    if (!year.value || !currentOrderNo.value) return false;
+    if (!operator.value) {
+      ui.error('仅能删除本人上传的图片');
+      return false;
+    }
+    try {
+      const resp = await collectionApi.deleteOwnPhoto(
+        year.value,
+        currentOrderNo.value,
+        id,
+        operator.value,
+      );
+      ui.success('已删除');
+      lastMergedPdfStale.value = Boolean(resp.mergedPdfStale);
+      await Promise.all([refreshDetail(), fetchProgress()]);
+      return true;
+    } catch (err) {
+      ui.error(err instanceof ApiError ? err.message : '删除失败');
+      return false;
+    }
+  }
+
   function clearStaged() {
     for (const k of KINDS) {
       for (const p of staged.value[k]) {
@@ -324,6 +348,7 @@ export const useCollectionStore = defineStore('collection', () => {
     stageFiles,
     removeStaged,
     clearStaged,
+    deleteServerPhoto,
     submit,
   };
 });

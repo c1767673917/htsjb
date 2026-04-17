@@ -94,12 +94,24 @@ type UploadFile struct {
 }
 
 type Detail struct {
-	OrderNo    string                  `json:"orderNo"`
-	Year       int                     `json:"year"`
-	Customer   string                  `json:"customer"`
-	CSVPresent bool                    `json:"csvPresent"`
-	Lines      []Line                  `json:"lines"`
-	Uploads    map[string][]UploadFile `json:"uploads"`
+	OrderNo     string                  `json:"orderNo"`
+	Year        int                     `json:"year"`
+	Customer    string                  `json:"customer"`
+	CSVPresent  bool                    `json:"csvPresent"`
+	CheckStatus string                  `json:"checkStatus"`
+	Lines       []Line                  `json:"lines"`
+	Uploads     map[string][]UploadFile `json:"uploads"`
+}
+
+var validCheckStatuses = map[string]struct{}{
+	"未检查": {},
+	"已检查": {},
+	"错误":  {},
+}
+
+func ValidCheckStatus(status string) bool {
+	_, ok := validCheckStatuses[status]
+	return ok
 }
 
 type AdminYear struct {
@@ -113,6 +125,7 @@ type AdminListItem struct {
 	OrderNo      string     `db:"order_no" json:"orderNo"`
 	Customer     string     `db:"customer" json:"customer"`
 	CSVRemoved   bool       `db:"csv_removed" json:"csvRemoved"`
+	CheckStatus  string     `db:"check_status" json:"checkStatus"`
 	LastUploadAt *time.Time `db:"last_upload_at" json:"lastUploadAt"`
 	Uploaded     bool       `json:"uploaded"`
 	Counts       Counts     `json:"counts"`
@@ -139,6 +152,7 @@ type adminListRow struct {
 	OrderNo         string         `db:"order_no"`
 	Customer        string         `db:"customer"`
 	CSVRemoved      bool           `db:"csv_removed"`
+	CheckStatus     string         `db:"check_status"`
 	LastUploadAtRaw sql.NullString `db:"last_upload_at"`
 	ContractCnt     int            `db:"contract_cnt"`
 	InvoiceCnt      int            `db:"invoice_cnt"`
@@ -285,8 +299,9 @@ func (s *Service) Detail(ctx context.Context, year int, orderNo string) (Detail,
 		Customer      string `db:"customer"`
 		CustomerClean string `db:"customer_clean"`
 		CSVPresent    bool   `db:"csv_present"`
+		CheckStatus   string `db:"check_status"`
 	}
-	if err := s.db.GetContext(ctx, &order, `SELECT order_no, customer, customer_clean, csv_present FROM orders WHERE year = ? AND order_no = ?`, year, orderNo); err != nil {
+	if err := s.db.GetContext(ctx, &order, `SELECT order_no, customer, customer_clean, csv_present, check_status FROM orders WHERE year = ? AND order_no = ?`, year, orderNo); err != nil {
 		if err == sql.ErrNoRows {
 			return Detail{}, apierror.ErrOrderNotFound
 		}
@@ -325,13 +340,39 @@ WHERE year = ? AND order_no = ?
 	}
 
 	return Detail{
-		OrderNo:    order.OrderNo,
-		Year:       year,
-		Customer:   order.Customer,
-		CSVPresent: order.CSVPresent,
-		Lines:      lines,
-		Uploads:    uploads,
+		OrderNo:     order.OrderNo,
+		Year:        year,
+		Customer:    order.Customer,
+		CSVPresent:  order.CSVPresent,
+		CheckStatus: order.CheckStatus,
+		Lines:       lines,
+		Uploads:     uploads,
 	}, nil
+}
+
+func (s *Service) SetCheckStatus(ctx context.Context, year int, orderNo, status string) error {
+	if !ValidYear(year) {
+		return apierror.ErrYearNotFound
+	}
+	if storage.ValidatePathSegment(orderNo) != nil {
+		return apierror.ErrOrderNotFound
+	}
+	if !ValidCheckStatus(status) {
+		return apierror.ErrBadRequest
+	}
+	res, err := s.db.ExecContext(ctx, `UPDATE orders SET check_status = ? WHERE year = ? AND order_no = ?`, status, year, orderNo)
+	if err != nil {
+		metrics.Default.IncSQLiteErrors()
+		return fmt.Errorf("update check_status: %w", err)
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("rows affected: %w", err)
+	}
+	if affected == 0 {
+		return apierror.ErrOrderNotFound
+	}
+	return nil
 }
 
 func (s *Service) CustomerClean(ctx context.Context, year int, orderNo string) (string, error) {
@@ -412,7 +453,7 @@ ORDER BY o.year ASC`
 	return items, nil
 }
 
-func (s *Service) AdminList(ctx context.Context, year, page, size int, onlyUploaded, onlyCSVRemoved bool) (AdminList, error) {
+func (s *Service) AdminList(ctx context.Context, year, page, size int, onlyUploaded, onlyCSVRemoved bool, query string) (AdminList, error) {
 	if !ValidYear(year) {
 		return AdminList{}, apierror.ErrYearNotFound
 	}
@@ -433,6 +474,22 @@ func (s *Service) AdminList(ctx context.Context, year, page, size int, onlyUploa
 	}
 	if onlyCSVRemoved {
 		where = append(where, `o.csv_present = 0 AND EXISTS (SELECT 1 FROM uploads u WHERE u.year = o.year AND u.order_no = o.order_no)`)
+	}
+	query = strings.TrimSpace(query)
+	if r := []rune(query); len(r) > 64 {
+		query = string(r[:64])
+	}
+	if query != "" {
+		where = append(where, `(
+  o.order_no LIKE '%' || ? || '%' COLLATE NOCASE
+  OR o.customer LIKE '%' || ? || '%' COLLATE NOCASE
+  OR EXISTS (
+    SELECT 1 FROM uploads uq
+    WHERE uq.year = o.year AND uq.order_no = o.order_no
+      AND uq.operator LIKE '%' || ? || '%' COLLATE NOCASE
+  )
+)`)
+		args = append(args, query, query, query)
 	}
 	whereSQL := strings.Join(where, " AND ")
 
@@ -462,10 +519,15 @@ func (s *Service) AdminList(ctx context.Context, year, page, size int, onlyUploa
 	items := make([]AdminListItem, 0, len(rows))
 	for _, row := range rows {
 		counts := Counts{"合同": row.ContractCnt, "发票": row.InvoiceCnt, "发货单": row.DeliveryCnt}
+		status := row.CheckStatus
+		if status == "" {
+			status = "未检查"
+		}
 		items = append(items, AdminListItem{
 			OrderNo:      row.OrderNo,
 			Customer:     row.Customer,
 			CSVRemoved:   row.CSVRemoved,
+			CheckStatus:  status,
 			LastUploadAt: parseSQLiteTime(row.LastUploadAtRaw),
 			Uploaded:     row.ContractCnt+row.InvoiceCnt+row.DeliveryCnt > 0,
 			Counts:       counts,
@@ -504,6 +566,7 @@ SELECT
   CASE WHEN o.csv_present = 0 AND EXISTS (
     SELECT 1 FROM uploads u WHERE u.year = o.year AND u.order_no = o.order_no
   ) THEN 1 ELSE 0 END AS csv_removed,
+  COALESCE(o.check_status, '未检查') AS check_status,
   MAX(u.uploaded_at) AS last_upload_at,
   COALESCE(SUM(CASE WHEN u.kind = '合同' THEN 1 ELSE 0 END), 0) AS contract_cnt,
   COALESCE(SUM(CASE WHEN u.kind = '发票' THEN 1 ELSE 0 END), 0) AS invoice_cnt,
@@ -513,7 +576,7 @@ FROM orders o
 LEFT JOIN uploads u ON u.year = o.year AND u.order_no = o.order_no
 WHERE ` + whereSQL + `
 AND (? = '' OR o.order_no > ?)
-GROUP BY o.order_no, o.customer, o.csv_present
+GROUP BY o.order_no, o.customer, o.csv_present, o.check_status
 ORDER BY o.order_no ASC
 LIMIT ?`
 

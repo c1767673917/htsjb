@@ -439,6 +439,14 @@
 @media (min-width: 960px) {
   .admin-body {
     grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
+    align-items: start;
+  }
+  .admin-side-panel {
+    position: sticky;
+    top: 72px;
+    align-self: start;
+    max-height: calc(100dvh - 88px);
+    overflow-y: auto;
   }
 }
 

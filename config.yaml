@@ -5,7 +5,7 @@ db_path: "./data/app.db"
 admin_password: "admin123"
 session_ttl_hours: 12
 limits:
-  per_kind_max: 20
+  per_kind_max: 50
   submit_body_max_mb: 60
   single_file_max_mb: 10
   single_file_decode_cap_mb: 20

@@ -19,13 +19,23 @@ const props = defineProps<{
   readOnly?: boolean;
   /** Admin: enable clicking the red x on server photos. */
   adminDelete?: boolean;
+  /** Collection page: the operator whose uploads the viewer is allowed to remove. */
+  currentOperator?: string;
 }>();
 
 const emit = defineEmits<{
   (e: 'add', files: File[]): void;
   (e: 'remove-staged', id: string): void;
   (e: 'admin-delete', photo: UploadedPhoto): void;
+  (e: 'user-delete', photo: UploadedPhoto): void;
+  (e: 'preview', payload: { src: string; alt: string }): void;
 }>();
+
+function canDeleteServer(photo: UploadedPhoto): boolean {
+  if (props.adminDelete) return true;
+  const op = props.currentOperator?.trim();
+  return Boolean(op) && photo.operator === op;
+}
 
 const inputRef = ref<HTMLInputElement | null>(null);
 
@@ -69,7 +79,17 @@ function humanSize(bytes: number): string {
            the rendered size to 96x96 via `object-fit: cover` so the browser
            never has to paint the full-resolution bitmap into the layout
            (M-15). -->
-      <div v-for="photo in serverPhotos" :key="`srv-${photo.id}`" class="thumb readonly">
+      <div
+        v-for="photo in serverPhotos"
+        :key="`srv-${photo.id}`"
+        class="thumb readonly"
+        role="button"
+        tabindex="0"
+        :aria-label="`预览 ${kind}-${photo.seq}`"
+        @click="emit('preview', { src: photo.url, alt: `${kind}-${photo.seq}` })"
+        @keydown.enter.prevent="emit('preview', { src: photo.url, alt: `${kind}-${photo.seq}` })"
+        @keydown.space.prevent="emit('preview', { src: photo.url, alt: `${kind}-${photo.seq}` })"
+      >
         <img
           :src="photo.url"
           :alt="`${kind}-${photo.seq}`"
@@ -86,6 +106,15 @@ function humanSize(bytes: number): string {
         >
           ×
         </button>
+        <button
+          v-else-if="canDeleteServer(photo)"
+          type="button"
+          class="delete-btn"
+          aria-label="删除我上传的照片"
+          @click.stop="emit('user-delete', photo)"
+        >
+          ×
+        </button>
         <div class="meta">
           <span>#{{ photo.seq }}</span>
           <span>{{ humanSize(photo.size) }}</span>
@@ -99,7 +128,17 @@ function humanSize(bytes: number): string {
       </div>
 
       <!-- Staged (not yet submitted) photos. -->
-      <div v-for="photo in stagedPhotos ?? []" :key="photo.id" class="thumb">
+      <div
+        v-for="photo in stagedPhotos ?? []"
+        :key="photo.id"
+        class="thumb"
+        role="button"
+        tabindex="0"
+        aria-label="预览待提交图片"
+        @click="emit('preview', { src: photo.previewUrl, alt: `待提交-${kind}` })"
+        @keydown.enter.prevent="emit('preview', { src: photo.previewUrl, alt: `待提交-${kind}` })"
+        @keydown.space.prevent="emit('preview', { src: photo.previewUrl, alt: `待提交-${kind}` })"
+      >
         <img
           :src="photo.previewUrl"
           :alt="`staged-${kind}`"
