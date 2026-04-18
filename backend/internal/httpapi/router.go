@@ -223,6 +223,15 @@ func timeoutDispatcher(next http.Handler) http.Handler {
 		ctx, cancel := context.WithTimeout(r.Context(), deadline)
 		defer cancel()
 
+		if isStreamingRoute(r.Method, r.URL.Path) {
+			rc := http.NewResponseController(w)
+			if err := rc.SetWriteDeadline(time.Now().Add(deadline)); err == nil {
+				defer func() { _ = rc.SetWriteDeadline(time.Time{}) }()
+			}
+			next.ServeHTTP(w, r.WithContext(ctx))
+			return
+		}
+
 		handler := http.TimeoutHandler(http.HandlerFunc(func(inner http.ResponseWriter, req *http.Request) {
 			next.ServeHTTP(inner, req.WithContext(ctx))
 		}), deadline, timeoutResponseJSON())
@@ -236,6 +245,8 @@ func routeTimeout(method, requestPath string) time.Duration {
 		return 15 * time.Minute
 	case method == http.MethodGet && strings.HasPrefix(requestPath, "/api/admin/") && strings.HasSuffix(requestPath, "/bundle.zip"):
 		return 120 * time.Second
+	case method == http.MethodGet && strings.HasPrefix(requestPath, "/api/admin/") && strings.HasSuffix(requestPath, "/merged.pdf"):
+		return 120 * time.Second
 	case method == http.MethodPost && strings.HasPrefix(requestPath, "/api/admin/") && strings.HasSuffix(requestPath, "/rebuild-pdf"):
 		return 60 * time.Second
 	case method == http.MethodPost && strings.HasPrefix(requestPath, "/api/y/") && strings.HasSuffix(requestPath, "/uploads"):
@@ -247,4 +258,19 @@ func routeTimeout(method, requestPath string) time.Duration {
 	default:
 		return 0
 	}
+}
+
+func isStreamingRoute(method, requestPath string) bool {
+	if method != http.MethodGet {
+		return false
+	}
+	switch {
+	case strings.HasPrefix(requestPath, "/api/admin/") && strings.HasSuffix(requestPath, "/export.zip"):
+		return true
+	case strings.HasPrefix(requestPath, "/api/admin/") && strings.HasSuffix(requestPath, "/merged.pdf"):
+		return true
+	case strings.HasPrefix(requestPath, "/files/"):
+		return true
+	}
+	return false
 }

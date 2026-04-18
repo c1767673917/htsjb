@@ -422,6 +422,7 @@ func (s *Service) handleYearExport(c *gin.Context) {
 
 	c.Header("Content-Type", "application/zip")
 	c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="%d-完整资料.zip"`, year))
+	c.Header("X-Content-Type-Options", "nosniff")
 	zw := zip.NewWriter(c.Writer)
 	var exportErrors []string
 
