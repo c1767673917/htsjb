@@ -56,6 +56,9 @@ func TestSubmitErrorCodesAndAtomicPaths(t *testing.T) {
 	})
 
 	t.Run("409 when cap exceeded", func(t *testing.T) {
+		env.uploads.cfg.Limits.PerKindMax = 20
+		defer func() { env.uploads.cfg.Limits.PerKindMax = 50 }()
+
 		files := map[string][][]byte{"contract[]": {}}
 		for i := 0; i < 21; i++ {
 			files["contract[]"] = append(files["contract[]"], jpegBytes(t, color.RGBA{R: uint8(i + 1), A: 255}))
@@ -239,6 +242,72 @@ func TestSubmitErrorCodesAndAtomicPaths(t *testing.T) {
 	})
 }
 
+func TestSubmitConcurrentDifferentOrders(t *testing.T) {
+	t.Parallel()
+
+	env := newUploadTestEnv(t, stubPDFBuilder{})
+	seedOrder(t, env.db, 2021, "RX2101-22927", "大庆市庆客隆连锁商贸有限公司", "seed-hash-2")
+
+	ready := make(chan struct{}, 2)
+	release := make(chan struct{})
+	env.uploads.SetHooks(Hooks{
+		AfterPlan: func() error {
+			ready <- struct{}{}
+			<-release
+			return nil
+		},
+	})
+	defer env.uploads.SetHooks(Hooks{})
+
+	type result struct {
+		orderNo string
+		code    int
+		body    string
+	}
+	results := make(chan result, 2)
+	submit := func(orderNo string, fill color.RGBA) {
+		go func() {
+			req := newMultipartRequest(t, "/api/y/2021/orders/"+orderNo+"/uploads", map[string][][]byte{
+				"contract[]": {jpegBytes(t, fill)},
+			})
+			rec := httptest.NewRecorder()
+			env.router.ServeHTTP(rec, req)
+			results <- result{orderNo: orderNo, code: rec.Code, body: rec.Body.String()}
+		}()
+	}
+
+	submit("RX2101-22926", color.RGBA{R: 11, A: 255})
+	submit("RX2101-22927", color.RGBA{G: 22, A: 255})
+
+	for i := 0; i < 2; i++ {
+		select {
+		case <-ready:
+		case <-time.After(2 * time.Second):
+			t.Fatal("timed out waiting for concurrent uploads to reach plan barrier")
+		}
+	}
+	close(release)
+
+	for i := 0; i < 2; i++ {
+		select {
+		case res := <-results:
+			if res.code != http.StatusOK {
+				t.Fatalf("expected concurrent upload for %s to succeed, got %d body=%s", res.orderNo, res.code, res.body)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("timed out waiting for concurrent upload result")
+		}
+	}
+
+	var total int
+	if err := env.db.GetContext(context.Background(), &total, `SELECT COUNT(*) FROM uploads WHERE year = 2021 AND order_no IN ('RX2101-22926', 'RX2101-22927')`); err != nil {
+		t.Fatalf("count uploads after concurrent submit: %v", err)
+	}
+	if total != 2 {
+		t.Fatalf("expected 2 upload rows after concurrent submit, got %d", total)
+	}
+}
+
 type uploadTestEnv struct {
 	router  *gin.Engine
 	db      *sqlx.DB
@@ -268,7 +337,7 @@ func newUploadTestEnv(t *testing.T, builder PDFBuilder) uploadTestEnv {
 		t.Fatalf("open db: %v", err)
 	}
 	t.Cleanup(func() { _ = conn.Close() })
-	seedOrder(t, conn)
+	seedOrder(t, conn, 2021, "RX2101-22926", "哈尔滨金诺食品有限公司", "seed-hash")
 
 	orderSvc := orders.NewService(conn, storageSvc)
 	uploadSvc := NewService(conn, cfg, orderSvc, storageSvc, builder, limits.New(cfg.Concurrency))
@@ -278,18 +347,19 @@ func newUploadTestEnv(t *testing.T, builder PDFBuilder) uploadTestEnv {
 	return uploadTestEnv{router: router, db: conn, storage: storageSvc, orders: orderSvc, uploads: uploadSvc}
 }
 
-func seedOrder(t *testing.T, conn *sqlx.DB) {
+func seedOrder(t *testing.T, conn *sqlx.DB, year int, orderNo, customer, sourceHash string) {
 	t.Helper()
+	customerClean := storage.SanitizeCustomerName(customer)
 	_, err := conn.Exec(`
 INSERT INTO orders (year, order_no, customer, customer_clean, csv_present)
-VALUES (2021, 'RX2101-22926', '哈尔滨金诺食品有限公司', '哈尔滨金诺食品有限公司', 1);
+VALUES (?, ?, ?, ?, 1);
 INSERT INTO order_lines (
 	year, order_no, order_date, order_date_sort, customer, product, quantity, amount,
 	total_with_tax, tax_rate, invoice_no, source_hash, source_line
 ) VALUES (
-	2021, 'RX2101-22926', '2021/1/4', '2021-01-04', '哈尔滨金诺食品有限公司', '满特起酥油（FM）', 1000, 114545.45,
-	126000, 10, '2021/50122444', 'seed-hash', 1
-);`)
+	?, ?, '2021/1/4', '2021-01-04', ?, '满特起酥油（FM）', 1000, 114545.45,
+	126000, 10, '2021/50122444', ?, 1
+);`, year, orderNo, customer, customerClean, year, orderNo, customer, sourceHash)
 	if err != nil {
 		t.Fatalf("seed order: %v", err)
 	}

@@ -39,6 +39,7 @@ type PDFBuilder interface {
 }
 
 type Hooks struct {
+	AfterPlan    func() error
 	BeforeCommit func() error
 	AfterCommit  func() error
 }
@@ -70,11 +71,20 @@ type stagedFile struct {
 	Size int64
 }
 
-type insertRecord struct {
-	ID       int64
+type uploadPlan struct {
+	Kind      string
+	Seq       int
+	Filename  string
+	Source    stagedFile
+	FinalPath string
+}
+
+type materializedUpload struct {
 	Kind     string
 	Seq      int
 	Filename string
+	ByteSize int64
+	SHA256   string
 }
 
 type uploadRateBucket struct {
@@ -136,12 +146,6 @@ func (s *Service) Submit(c *gin.Context, year int, orderNo string) (SubmitRespon
 		return SubmitResponse{}, err
 	}
 	defer releaseUpload()
-
-	releasePDF, err := s.acquirePDFGate(ctx)
-	if err != nil {
-		return SubmitResponse{}, err
-	}
-	defer releasePDF()
 
 	release, err := s.storage.Acquire(ctx, year, orderNo)
 	if err != nil {
@@ -251,75 +255,60 @@ func (s *Service) Submit(c *gin.Context, year int, orderNo string) (SubmitRespon
 		return SubmitResponse{}, apierror.Wrap(err, http.StatusInternalServerError, "INTERNAL", "创建订单目录失败")
 	}
 
-	pdfName := storage.MergedPDFName(orderNo, customerClean)
-	pdfPath := filepath.Join(orderDir, pdfName)
-	bakPath := pdfPath + ".bak-" + txID
-	backupTaken := false
-	if _, err := os.Stat(pdfPath); err == nil {
-		if err := renameAndSync(pdfPath, bakPath); err != nil {
-			return SubmitResponse{}, apierror.Wrap(err, http.StatusInternalServerError, "INTERNAL", "备份旧 PDF 失败")
+	plans, err := s.planUploads(ctx, year, orderNo, customerClean, orderDir, staged)
+	if err != nil {
+		return SubmitResponse{}, err
+	}
+	if s.hooks.AfterPlan != nil {
+		if err := s.hooks.AfterPlan(); err != nil {
+			return SubmitResponse{}, apierror.Wrap(err, http.StatusInternalServerError, "INTERNAL", "提交前故障")
 		}
-		backupTaken = true
 	}
 
-	createdPaths := make([]string, 0, totalFiles)
+	createdPaths := make([]string, 0, len(plans))
+	materialized := make([]materializedUpload, 0, len(plans))
+	for _, plan := range plans {
+		finalPath, size, sha, err := s.materializeJPEG(ctx, plan.Source, plan.FinalPath)
+		if err != nil {
+			s.rollbackCreatedFiles(createdPaths)
+			return SubmitResponse{}, wrapStorageError(err, "保存图片失败")
+		}
+		createdPaths = append(createdPaths, finalPath)
+		materialized = append(materialized, materializedUpload{
+			Kind:     plan.Kind,
+			Seq:      plan.Seq,
+			Filename: plan.Filename,
+			ByteSize: size,
+			SHA256:   sha,
+		})
+	}
+
 	tx, err := s.db.BeginTxx(ctx, nil)
 	if err != nil {
-		s.restorePDF(pdfPath, bakPath, backupTaken)
+		s.rollbackCreatedFiles(createdPaths)
 		return SubmitResponse{}, apierror.Wrap(err, http.StatusInternalServerError, "INTERNAL", "创建事务失败")
 	}
 	defer tx.Rollback()
 
-	inserted := make([]insertRecord, 0, totalFiles)
-	for _, kind := range orders.AllKinds() {
-		files := staged[kind]
-		if len(files) == 0 {
-			continue
-		}
-		var maxSeq int
-		if err := tx.GetContext(ctx, &maxSeq, `SELECT COALESCE(MAX(seq), 0) FROM uploads WHERE year = ? AND order_no = ? AND kind = ?`, year, orderNo, kind); err != nil {
-			s.rollbackCreatedFiles(createdPaths)
-			s.restorePDF(pdfPath, bakPath, backupTaken)
-			return SubmitResponse{}, apierror.Wrap(err, http.StatusInternalServerError, "INTERNAL", "查询上传序号失败")
-		}
-
-		for idx, file := range files {
-			seq := maxSeq + idx + 1
-			filename := fmt.Sprintf("%s-%s-%s-%02d.jpg", orderNo, customerClean, kind, seq)
-			dstPath := filepath.Join(orderDir, filename)
-			finalPath, size, sha, err := s.materializeJPEG(ctx, file, dstPath)
-			if err != nil {
-				s.rollbackCreatedFiles(createdPaths)
-				s.restorePDF(pdfPath, bakPath, backupTaken)
-				return SubmitResponse{}, wrapStorageError(err, "保存图片失败")
-			}
-			createdPaths = append(createdPaths, finalPath)
-
-			result, err := tx.ExecContext(ctx, `
+	for _, upload := range materialized {
+		if _, err := tx.ExecContext(ctx, `
 INSERT INTO uploads (year, order_no, kind, seq, filename, byte_size, sha256, operator)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-				year, orderNo, kind, seq, filename, size, sha, operator,
-			)
-			if err != nil {
-				s.rollbackCreatedFiles(createdPaths)
-				s.restorePDF(pdfPath, bakPath, backupTaken)
-				return SubmitResponse{}, apierror.Wrap(err, http.StatusInternalServerError, "INTERNAL", "写入上传记录失败")
-			}
-			id, _ := result.LastInsertId()
-			inserted = append(inserted, insertRecord{ID: id, Kind: kind, Seq: seq, Filename: filename})
+			year, orderNo, upload.Kind, upload.Seq, upload.Filename, upload.ByteSize, upload.SHA256, operator,
+		); err != nil {
+			s.rollbackCreatedFiles(createdPaths)
+			return SubmitResponse{}, apierror.Wrap(err, http.StatusInternalServerError, "INTERNAL", "写入上传记录失败")
 		}
 	}
 
 	if s.hooks.BeforeCommit != nil {
 		if err := s.hooks.BeforeCommit(); err != nil {
 			s.rollbackCreatedFiles(createdPaths)
-			s.restorePDF(pdfPath, bakPath, backupTaken)
 			return SubmitResponse{}, apierror.Wrap(err, http.StatusInternalServerError, "INTERNAL", "提交前故障")
 		}
 	}
 	if err := tx.Commit(); err != nil {
 		s.rollbackCreatedFiles(createdPaths)
-		s.restorePDF(pdfPath, bakPath, backupTaken)
 		return SubmitResponse{}, apierror.Wrap(err, http.StatusInternalServerError, "INTERNAL", "提交上传事务失败")
 	}
 
@@ -327,15 +316,11 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 	if s.hooks.AfterCommit != nil {
 		if err := s.hooks.AfterCommit(); err != nil {
 			mergedPDFStale = true
-			s.restorePDF(pdfPath, bakPath, backupTaken)
 		}
 	}
 	if !mergedPDFStale {
-		if _, err := s.rebuildMergedPDF(ctx, year, orderNo, true); err != nil {
+		if _, err := s.rebuildMergedPDF(ctx, year, orderNo, false); err != nil {
 			mergedPDFStale = true
-			s.restorePDF(pdfPath, bakPath, backupTaken)
-		} else if backupTaken {
-			_ = os.Remove(bakPath)
 		}
 	}
 
@@ -348,8 +333,37 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 		return SubmitResponse{}, apierror.Wrap(err, http.StatusInternalServerError, "INTERNAL", "读取年度进度失败")
 	}
 
-	_ = inserted
 	return SubmitResponse{Counts: counts, Progress: progress, MergedPDFStale: mergedPDFStale}, nil
+}
+
+func (s *Service) planUploads(ctx context.Context, year int, orderNo, customerClean, orderDir string, staged map[string][]stagedFile) ([]uploadPlan, error) {
+	total := 0
+	for _, files := range staged {
+		total += len(files)
+	}
+	plans := make([]uploadPlan, 0, total)
+	for _, kind := range orders.AllKinds() {
+		files := staged[kind]
+		if len(files) == 0 {
+			continue
+		}
+		var maxSeq int
+		if err := s.db.GetContext(ctx, &maxSeq, `SELECT COALESCE(MAX(seq), 0) FROM uploads WHERE year = ? AND order_no = ? AND kind = ?`, year, orderNo, kind); err != nil {
+			return nil, apierror.Wrap(err, http.StatusInternalServerError, "INTERNAL", "查询上传序号失败")
+		}
+		for idx, file := range files {
+			seq := maxSeq + idx + 1
+			filename := fmt.Sprintf("%s-%s-%s-%02d.jpg", orderNo, customerClean, kind, seq)
+			plans = append(plans, uploadPlan{
+				Kind:      kind,
+				Seq:       seq,
+				Filename:  filename,
+				Source:    file,
+				FinalPath: filepath.Join(orderDir, filename),
+			})
+		}
+	}
+	return plans, nil
 }
 
 func (s *Service) RebuildMergedPDF(ctx context.Context, year int, orderNo string) (int, error) {
