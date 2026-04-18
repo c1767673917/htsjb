@@ -453,20 +453,7 @@ ORDER BY o.year ASC`
 	return items, nil
 }
 
-func (s *Service) AdminList(ctx context.Context, year, page, size int, onlyUploaded, onlyCSVRemoved bool, query, checkStatus string) (AdminList, error) {
-	if !ValidYear(year) {
-		return AdminList{}, apierror.ErrYearNotFound
-	}
-	if page <= 0 {
-		page = 1
-	}
-	if size <= 0 {
-		size = 50
-	}
-	if size > 200 {
-		size = 200
-	}
-
+func buildAdminWhere(year int, onlyUploaded, onlyCSVRemoved bool, query, checkStatus string) (string, []any) {
 	where := []string{"o.year = ?"}
 	args := []any{year}
 	if onlyUploaded {
@@ -496,7 +483,24 @@ func (s *Service) AdminList(ctx context.Context, year, page, size int, onlyUploa
 )`)
 		args = append(args, query, query, query)
 	}
-	whereSQL := strings.Join(where, " AND ")
+	return strings.Join(where, " AND "), args
+}
+
+func (s *Service) AdminList(ctx context.Context, year, page, size int, onlyUploaded, onlyCSVRemoved bool, query, checkStatus string) (AdminList, error) {
+	if !ValidYear(year) {
+		return AdminList{}, apierror.ErrYearNotFound
+	}
+	if page <= 0 {
+		page = 1
+	}
+	if size <= 0 {
+		size = 50
+	}
+	if size > 200 {
+		size = 200
+	}
+
+	whereSQL, args := buildAdminWhere(year, onlyUploaded, onlyCSVRemoved, query, checkStatus)
 
 	var total int
 	countQuery := `SELECT COUNT(*) FROM orders o WHERE ` + whereSQL
@@ -540,6 +544,57 @@ func (s *Service) AdminList(ctx context.Context, year, page, size int, onlyUploa
 		})
 	}
 	return AdminList{Page: page, Size: size, Total: total, Items: items}, nil
+}
+
+func (s *Service) AdminExportAll(ctx context.Context, year int, onlyUploaded, onlyCSVRemoved bool, query, checkStatus string) ([]AdminListItem, error) {
+	if !ValidYear(year) {
+		return nil, apierror.ErrYearNotFound
+	}
+	whereSQL, args := buildAdminWhere(year, onlyUploaded, onlyCSVRemoved, query, checkStatus)
+
+	sqlStr := `
+SELECT
+  o.order_no,
+  o.customer,
+  CASE WHEN o.csv_present = 0 AND EXISTS (
+    SELECT 1 FROM uploads u WHERE u.year = o.year AND u.order_no = o.order_no
+  ) THEN 1 ELSE 0 END AS csv_removed,
+  COALESCE(o.check_status, '未检查') AS check_status,
+  MAX(u.uploaded_at) AS last_upload_at,
+  COALESCE(SUM(CASE WHEN u.kind = '合同' THEN 1 ELSE 0 END), 0) AS contract_cnt,
+  COALESCE(SUM(CASE WHEN u.kind = '发票' THEN 1 ELSE 0 END), 0) AS invoice_cnt,
+  COALESCE(SUM(CASE WHEN u.kind = '发货单' THEN 1 ELSE 0 END), 0) AS delivery_cnt,
+  COALESCE(GROUP_CONCAT(NULLIF(u.operator, ''), char(31)), '') AS operators
+FROM orders o
+LEFT JOIN uploads u ON u.year = o.year AND u.order_no = o.order_no
+WHERE ` + whereSQL + `
+GROUP BY o.order_no, o.customer, o.csv_present, o.check_status
+ORDER BY o.order_no ASC`
+
+	var rows []adminListRow
+	if err := s.db.SelectContext(ctx, &rows, sqlStr, args...); err != nil {
+		metrics.Default.IncSQLiteErrors()
+		return nil, err
+	}
+	items := make([]AdminListItem, 0, len(rows))
+	for _, row := range rows {
+		counts := Counts{"合同": row.ContractCnt, "发票": row.InvoiceCnt, "发货单": row.DeliveryCnt}
+		status := row.CheckStatus
+		if status == "" {
+			status = "未检查"
+		}
+		items = append(items, AdminListItem{
+			OrderNo:      row.OrderNo,
+			Customer:     row.Customer,
+			CSVRemoved:   row.CSVRemoved,
+			CheckStatus:  status,
+			LastUploadAt: parseSQLiteTime(row.LastUploadAtRaw),
+			Uploaded:     row.ContractCnt+row.InvoiceCnt+row.DeliveryCnt > 0,
+			Counts:       counts,
+			Operators:    splitOperators(row.OperatorsRaw),
+		})
+	}
+	return items, nil
 }
 
 func splitOperators(raw sql.NullString) []string {

@@ -241,6 +241,8 @@ func timeoutDispatcher(next http.Handler) http.Handler {
 
 func routeTimeout(method, requestPath string) time.Duration {
 	switch {
+	case method == http.MethodGet && strings.HasPrefix(requestPath, "/api/admin/") && strings.HasSuffix(requestPath, "/export.csv"):
+		return 60 * time.Second
 	case method == http.MethodGet && strings.HasPrefix(requestPath, "/api/admin/") && strings.HasSuffix(requestPath, "/export.zip"):
 		return 15 * time.Minute
 	case method == http.MethodGet && strings.HasPrefix(requestPath, "/api/admin/") && strings.HasSuffix(requestPath, "/bundle.zip"):

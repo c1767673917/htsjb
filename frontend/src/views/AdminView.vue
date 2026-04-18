@@ -121,8 +121,37 @@ function bundleZipHref(): string | null {
   if (!currentRow.value) return null;
   return adminApi.bundleZipUrl(currentYear.value, currentRow.value.orderNo);
 }
+const showExportDialog = ref(false);
+const exportOperator = ref('');
+const exportUploadFrom = ref('');
+const exportUploadTo = ref('');
+
+function openExportDialog() {
+  exportOperator.value = '';
+  exportUploadFrom.value = '';
+  exportUploadTo.value = '';
+  showExportDialog.value = true;
+}
+
+function closeExportDialog() {
+  showExportDialog.value = false;
+}
+
 function yearExportHref(): string {
-  return adminApi.yearExportUrl(currentYear.value);
+  return adminApi.yearExportUrl(currentYear.value, {
+    operator: exportOperator.value || undefined,
+    uploadFrom: exportUploadFrom.value || undefined,
+    uploadTo: exportUploadTo.value || undefined,
+  });
+}
+
+function csvExportHref(): string {
+  return adminApi.csvExportUrl(currentYear.value, {
+    onlyUploaded: filters.value.onlyUploaded || undefined,
+    onlyCsvRemoved: filters.value.onlyCsvRemoved || undefined,
+    q: filters.value.q || undefined,
+    checkStatus: filters.value.checkStatus || undefined,
+  });
 }
 
 async function onDeletePhoto(photo: UploadedPhoto) {
@@ -203,7 +232,8 @@ function gotoPage(p: number) {
     <header class="admin-header">
       <strong style="font-size: var(--font-lg)">后台管理</strong>
       <div style="display:flex; gap: var(--space-2); align-items:center">
-        <a class="btn btn-ghost tap" :href="yearExportHref()" download>导出本年 zip</a>
+        <a class="btn btn-ghost tap" :href="csvExportHref()" download>导出 CSV</a>
+        <button type="button" class="btn btn-ghost tap" @click="openExportDialog">导出本年 zip</button>
         <button type="button" class="btn btn-ghost tap" @click="onLogout">退出</button>
       </div>
     </header>
@@ -396,6 +426,30 @@ function gotoPage(p: number) {
         </template>
       </aside>
     </div>
+
+    <teleport to="body">
+      <div v-if="showExportDialog" class="export-overlay" @click.self="closeExportDialog">
+        <div class="export-dialog">
+          <h3 style="margin:0 0 var(--space-3)">导出本年 ZIP</h3>
+          <label class="export-field">
+            <span>录入人</span>
+            <input class="input" type="text" v-model="exportOperator" placeholder="留空则不筛选" />
+          </label>
+          <label class="export-field">
+            <span>最后上传时间（起）</span>
+            <input class="input" type="date" v-model="exportUploadFrom" />
+          </label>
+          <label class="export-field">
+            <span>最后上传时间（止）</span>
+            <input class="input" type="date" v-model="exportUploadTo" />
+          </label>
+          <div style="display:flex; gap:var(--space-2); justify-content:flex-end; margin-top:var(--space-3)">
+            <button type="button" class="btn btn-ghost tap" @click="closeExportDialog">取消</button>
+            <a class="btn btn-primary tap" :href="yearExportHref()" download @click="closeExportDialog">开始导出</a>
+          </div>
+        </div>
+      </div>
+    </teleport>
   </div>
 </template>
 
@@ -487,5 +541,30 @@ function gotoPage(p: number) {
 }
 .check-menu-item:hover {
   background: var(--color-surface-alt);
+}
+
+.export-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+.export-dialog {
+  background: var(--color-surface);
+  border-radius: var(--radius-md);
+  padding: var(--space-4);
+  min-width: 320px;
+  max-width: 400px;
+  box-shadow: var(--shadow-lg, 0 8px 32px rgba(0,0,0,.2));
+}
+.export-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: var(--space-2);
+  font-size: var(--font-sm);
 }
 </style>

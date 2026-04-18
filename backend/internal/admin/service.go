@@ -9,6 +9,7 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
+	"encoding/csv"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -89,6 +90,7 @@ func (s *Service) RegisterRoutes(group *gin.RouterGroup) {
 	authed.GET("/:year/orders/:orderNo/merged.pdf", s.handleMergedPDF)
 	authed.GET("/:year/orders/:orderNo/bundle.zip", s.handleOrderBundle)
 	authed.GET("/:year/export.zip", s.handleYearExport)
+	authed.GET("/:year/export.csv", s.handleCSVExport)
 
 	mutating := authed.Group("")
 	mutating.Use(s.requireCSRF)
@@ -414,7 +416,11 @@ func (s *Service) handleYearExport(c *gin.Context) {
 	}
 	defer releaseExport()
 
-	exportOrders, err := s.yearExportOrders(c.Request.Context(), year)
+	operator := strings.TrimSpace(c.Query("operator"))
+	uploadFrom := strings.TrimSpace(c.Query("uploadFrom"))
+	uploadTo := strings.TrimSpace(c.Query("uploadTo"))
+
+	exportOrders, err := s.yearExportOrders(c.Request.Context(), year, operator, uploadFrom, uploadTo)
 	if err != nil {
 		writeError(c, apierror.Wrap(err, http.StatusInternalServerError, "INTERNAL", "读取导出订单失败"))
 		return
@@ -473,6 +479,52 @@ func (s *Service) handleYearExport(c *gin.Context) {
 	metrics.Default.IncZIPExports()
 }
 
+func (s *Service) handleCSVExport(c *gin.Context) {
+	year, err := orders.ParseAndValidateYear(c.Param("year"))
+	if err != nil {
+		writeError(c, err)
+		return
+	}
+	onlyUploaded := c.Query("onlyUploaded") == "true"
+	onlyCSVRemoved := c.Query("onlyCsvRemoved") == "true"
+	searchQuery := strings.TrimSpace(c.Query("q"))
+	checkStatus := strings.TrimSpace(c.Query("checkStatus"))
+
+	items, err := s.orders.AdminExportAll(c.Request.Context(), year, onlyUploaded, onlyCSVRemoved, searchQuery, checkStatus)
+	if err != nil {
+		writeError(c, apierror.Wrap(err, http.StatusInternalServerError, "INTERNAL", "读取导出数据失败"))
+		return
+	}
+
+	c.Header("Content-Type", "text/csv; charset=utf-8")
+	c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="%d-订单列表.csv"`, year))
+	c.Writer.Write([]byte{0xEF, 0xBB, 0xBF}) // UTF-8 BOM for Excel
+	w := csv.NewWriter(c.Writer)
+	w.Write([]string{"单据编号", "客户", "已上传", "检查状态", "合同数量", "发票数量", "发货单数量", "录入人", "最后上传时间"})
+	for _, item := range items {
+		lastUpload := ""
+		if item.LastUploadAt != nil {
+			lastUpload = item.LastUploadAt.Format("2006-01-02 15:04:05")
+		}
+		uploaded := "否"
+		if item.Uploaded {
+			uploaded = "是"
+		}
+		w.Write([]string{
+			item.OrderNo,
+			item.Customer,
+			uploaded,
+			item.CheckStatus,
+			strconv.Itoa(item.Counts["合同"]),
+			strconv.Itoa(item.Counts["发票"]),
+			strconv.Itoa(item.Counts["发货单"]),
+			strings.Join(item.Operators, "、"),
+			lastUpload,
+		})
+	}
+	w.Flush()
+}
+
 func (s *Service) resetOrder(ctx context.Context, year int, orderNo string) error {
 	release, err := s.storage.Acquire(ctx, year, orderNo)
 	if err != nil {
@@ -523,14 +575,29 @@ func (s *Service) resetOrder(ctx context.Context, year int, orderNo string) erro
 	return nil
 }
 
-func (s *Service) yearExportOrders(ctx context.Context, year int) ([]yearExportOrder, error) {
+func (s *Service) yearExportOrders(ctx context.Context, year int, operator, uploadFrom, uploadTo string) ([]yearExportOrder, error) {
 	type row struct {
 		OrderNo       string  `db:"order_no"`
 		CustomerClean string  `db:"customer_clean"`
 		Filename      *string `db:"filename"`
 	}
-	var rows []row
-	if err := s.db.SelectContext(ctx, &rows, `
+
+	existsConds := []string{"ux.year = o.year", "ux.order_no = o.order_no"}
+	args := []any{year}
+	if operator != "" {
+		existsConds = append(existsConds, "ux.operator LIKE '%' || ? || '%' COLLATE NOCASE")
+		args = append(args, operator)
+	}
+	if uploadFrom != "" {
+		existsConds = append(existsConds, "ux.uploaded_at >= ?")
+		args = append(args, uploadFrom)
+	}
+	if uploadTo != "" {
+		existsConds = append(existsConds, "ux.uploaded_at <= ?")
+		args = append(args, uploadTo+" 23:59:59")
+	}
+
+	query := `
 SELECT
 	o.order_no,
 	o.customer_clean,
@@ -541,9 +608,12 @@ LEFT JOIN uploads u
 	AND u.order_no = o.order_no
 	AND u.kind = '发货单'
 WHERE o.year = ? AND EXISTS (
-	SELECT 1 FROM uploads ux WHERE ux.year = o.year AND ux.order_no = o.order_no
+	SELECT 1 FROM uploads ux WHERE ` + strings.Join(existsConds, " AND ") + `
 )
-ORDER BY o.order_no ASC, u.seq ASC, u.id ASC`, year); err != nil {
+ORDER BY o.order_no ASC, u.seq ASC, u.id ASC`
+
+	var rows []row
+	if err := s.db.SelectContext(ctx, &rows, query, args...); err != nil {
 		return nil, err
 	}
 

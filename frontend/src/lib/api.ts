@@ -347,8 +347,25 @@ export const adminApi = {
   bundleZipUrl(year: number, orderNo: string) {
     return `/api/admin/${year}/orders/${encodeURIComponent(orderNo)}/bundle.zip`;
   },
-  yearExportUrl(year: number) {
-    return `/api/admin/${year}/export.zip`;
+  yearExportUrl(year: number, filters?: { operator?: string; uploadFrom?: string; uploadTo?: string }) {
+    const params = new URLSearchParams();
+    if (filters?.operator) params.set('operator', filters.operator);
+    if (filters?.uploadFrom) params.set('uploadFrom', filters.uploadFrom);
+    if (filters?.uploadTo) params.set('uploadTo', filters.uploadTo);
+    const qs = params.toString();
+    return `/api/admin/${year}/export.zip` + (qs ? `?${qs}` : '');
+  },
+  csvExportUrl(
+    year: number,
+    filters?: { onlyUploaded?: boolean; onlyCsvRemoved?: boolean; q?: string; checkStatus?: string },
+  ) {
+    const params = new URLSearchParams();
+    if (filters?.onlyUploaded) params.set('onlyUploaded', 'true');
+    if (filters?.onlyCsvRemoved) params.set('onlyCsvRemoved', 'true');
+    if (filters?.q) params.set('q', filters.q);
+    if (filters?.checkStatus) params.set('checkStatus', filters.checkStatus);
+    const qs = params.toString();
+    return `/api/admin/${year}/export.csv` + (qs ? `?${qs}` : '');
   },
   deletePhoto(year: number, orderNo: string, id: number, csrf: string) {
     const enc = encodeURIComponent(orderNo);
