@@ -444,10 +444,14 @@ func (s *Service) handleYearExport(c *gin.Context) {
 		if err == nil {
 			if _, statErr := os.Stat(pdfPath); statErr == nil {
 				if err := writeZipEntry(c.Request.Context(), zw, filepath.Join(order.OrderNo, pdfName), pdfPath); err != nil {
-					release()
+					if c.Request.Context().Err() != nil {
+						release()
+						slog.WarnContext(c.Request.Context(), "write year export pdf cancelled", "year", year, "order_no", order.OrderNo, "error", err)
+						_ = zw.Close()
+						return
+					}
+					exportErrors = append(exportErrors, fmt.Sprintf("%s: 写入合并PDF失败: %v", order.OrderNo, err))
 					slog.WarnContext(c.Request.Context(), "write year export pdf failed", "year", year, "order_no", order.OrderNo, "error", err)
-					_ = zw.Close()
-					return
 				}
 			}
 		}
@@ -459,10 +463,14 @@ func (s *Service) handleYearExport(c *gin.Context) {
 				continue
 			}
 			if err := writeZipEntry(c.Request.Context(), zw, filepath.Join(order.OrderNo, filename), fullPath); err != nil {
-				release()
+				if c.Request.Context().Err() != nil {
+					release()
+					slog.WarnContext(c.Request.Context(), "write year export delivery cancelled", "year", year, "order_no", order.OrderNo, "filename", filename, "error", err)
+					_ = zw.Close()
+					return
+				}
+				exportErrors = append(exportErrors, fmt.Sprintf("%s: 写入发货单失败 %s: %v", order.OrderNo, filename, err))
 				slog.WarnContext(c.Request.Context(), "write year export delivery failed", "year", year, "order_no", order.OrderNo, "filename", filename, "error", err)
-				_ = zw.Close()
-				return
 			}
 		}
 		release()
@@ -589,11 +597,11 @@ func (s *Service) yearExportOrders(ctx context.Context, year int, operator, uplo
 		args = append(args, operator)
 	}
 	if uploadFrom != "" {
-		existsConds = append(existsConds, "ux.uploaded_at >= ?")
+		existsConds = append(existsConds, "ux.uploaded_at >= datetime(?, 'utc')")
 		args = append(args, uploadFrom)
 	}
 	if uploadTo != "" {
-		existsConds = append(existsConds, "ux.uploaded_at <= ?")
+		existsConds = append(existsConds, "ux.uploaded_at <= datetime(?, 'utc')")
 		args = append(args, uploadTo+" 23:59:59")
 	}
 
