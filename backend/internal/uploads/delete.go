@@ -195,8 +195,7 @@ ORDER BY seq ASC, id ASC`, year, orderNo, target.Kind, uploadID); err != nil {
 	return DeleteResult{}, nil
 }
 
-// HandleUserDelete exposes a user-facing delete endpoint. The caller proves
-// ownership by passing the same `operator` value they used when submitting.
+// HandleUserDelete exposes a user-facing delete endpoint.
 func (s *Service) HandleUserDelete(c *gin.Context) {
 	year, err := orders.ParseAndValidateYear(c.Param("year"))
 	if err != nil {
@@ -214,31 +213,9 @@ func (s *Service) HandleUserDelete(c *gin.Context) {
 		return
 	}
 
-	operator := sanitizeOperator(c.Query("operator"))
-	if operator == "" {
-		writeError(c, apierror.ErrNotPhotoOwner)
-		return
-	}
-
 	if !s.allowUploadAttempt(c.ClientIP()) {
 		metrics.Default.IncRateLimited()
 		writeError(c, apierror.ErrRateLimited)
-		return
-	}
-
-	var row struct {
-		Operator string `db:"operator"`
-	}
-	if err := s.db.GetContext(c.Request.Context(), &row, `SELECT operator FROM uploads WHERE id = ? AND year = ? AND order_no = ?`, uploadID, year, orderNo); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			writeError(c, apierror.ErrFileNotFound)
-			return
-		}
-		writeError(c, apierror.Wrap(err, http.StatusInternalServerError, "INTERNAL", "读取上传记录失败"))
-		return
-	}
-	if row.Operator == "" || row.Operator != operator {
-		writeError(c, apierror.ErrNotPhotoOwner)
 		return
 	}
 

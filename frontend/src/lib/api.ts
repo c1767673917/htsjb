@@ -282,11 +282,11 @@ export const collectionApi = {
       multipart: true,
     });
   },
-  deleteOwnPhoto(year: number, orderNo: string, id: number, operator: string) {
+  deleteOwnPhoto(year: number, orderNo: string, id: number) {
     const enc = encodeURIComponent(orderNo);
     return request<{ ok: true; mergedPdfStale?: boolean }>(
       `/api/y/${year}/orders/${enc}/uploads/${id}`,
-      { method: 'DELETE', query: { operator } },
+      { method: 'DELETE' },
     );
   },
 };

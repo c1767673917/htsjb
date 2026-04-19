@@ -239,16 +239,11 @@ export const useCollectionStore = defineStore('collection', () => {
   async function deleteServerPhoto(id: number): Promise<boolean> {
     const ui = useUiStore();
     if (!year.value || !currentOrderNo.value) return false;
-    if (!operator.value) {
-      ui.error('仅能删除本人上传的图片');
-      return false;
-    }
     try {
       const resp = await collectionApi.deleteOwnPhoto(
         year.value,
         currentOrderNo.value,
         id,
-        operator.value,
       );
       ui.success('已删除');
       lastMergedPdfStale.value = Boolean(resp.mergedPdfStale);
