@@ -77,6 +77,17 @@ export const useCollectionStore = defineStore('collection', () => {
   // discards stale responses and cancels the earlier network call.
   let detailSeq = 0;
   let detailAbort: AbortController | null = null;
+  let cacheBust = 0;
+
+  function stampPhotoUrls(detail: OrderDetail) {
+    if (cacheBust === 0) return;
+    const suffix = `?_v=${cacheBust}`;
+    for (const k of KINDS) {
+      for (const p of detail.uploads[k]) {
+        p.url += suffix;
+      }
+    }
+  }
 
   function setYear(y: number) {
     if (year.value !== y) {
@@ -179,6 +190,7 @@ export const useCollectionStore = defineStore('collection', () => {
       // overwrite the newer order's detail.
       if (mySeq !== detailSeq) return;
       if (currentOrderNo.value !== targetOrderNo || year.value !== targetYear) return;
+      stampPhotoUrls(resp);
       currentDetail.value = resp;
     } catch (err) {
       if ((err as Error).name === 'AbortError') return;
@@ -247,6 +259,7 @@ export const useCollectionStore = defineStore('collection', () => {
       );
       ui.success('已删除');
       lastMergedPdfStale.value = Boolean(resp.mergedPdfStale);
+      cacheBust++;
       await Promise.all([refreshDetail(), fetchProgress()]);
       return true;
     } catch (err) {
@@ -303,6 +316,7 @@ export const useCollectionStore = defineStore('collection', () => {
       // route-change (FR-SUBMIT-4).
       clearStaged();
       lastMergedPdfStale.value = resp.mergedPdfStale;
+      cacheBust++;
       await Promise.all([refreshDetail(), fetchProgress()]);
       ui.success('提交成功');
       if (resp.mergedPdfStale) {

@@ -50,6 +50,17 @@ export const useAdminStore = defineStore('admin', () => {
   let listSeq = 0;
   let detailAbort: AbortController | null = null;
   let detailSeq = 0;
+  let cacheBust = 0;
+
+  function stampPhotoUrls(detail: OrderDetail) {
+    if (cacheBust === 0) return;
+    const suffix = `?_v=${cacheBust}`;
+    for (const photos of Object.values(detail.uploads)) {
+      for (const p of photos) {
+        p.url += suffix;
+      }
+    }
+  }
 
   /**
    * Probe the session. Returns true when the cookie is still valid. On 401
@@ -192,6 +203,7 @@ export const useAdminStore = defineStore('admin', () => {
       const resp = await adminApi.detail(currentYear.value, row.orderNo, signal);
       if (mySeq !== detailSeq) return;
       if (currentRow.value?.orderNo !== row.orderNo) return;
+      stampPhotoUrls(resp);
       currentDetail.value = resp;
     } catch (err) {
       if ((err as Error).name === 'AbortError') return;
@@ -220,6 +232,7 @@ export const useAdminStore = defineStore('admin', () => {
     try {
       await adminApi.deletePhoto(currentYear.value, currentRow.value.orderNo, id, csrfToken.value);
       ui.success('已删除');
+      cacheBust++;
       await Promise.all([refreshCurrentRow(), loadOrders()]);
       return true;
     } catch (err) {
@@ -297,6 +310,7 @@ export const useAdminStore = defineStore('admin', () => {
       const resp = await adminApi.detail(targetYear, targetOrderNo, signal);
       if (mySeq !== detailSeq) return;
       if (currentRow.value?.orderNo !== targetOrderNo) return;
+      stampPhotoUrls(resp);
       currentDetail.value = resp;
     } catch {
       /* surfaced by loadOrders path */
