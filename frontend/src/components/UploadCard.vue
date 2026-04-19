@@ -53,6 +53,23 @@ function onChange(e: Event) {
   input.value = '';
 }
 
+function onPaste(e: ClipboardEvent) {
+  if (props.readOnly || addDisabled.value) return;
+  const items = e.clipboardData?.items;
+  if (!items) return;
+  const files: File[] = [];
+  for (const item of items) {
+    if (item.type.startsWith('image/')) {
+      const file = item.getAsFile();
+      if (file) files.push(file);
+    }
+  }
+  if (files.length > 0) {
+    e.preventDefault();
+    emit('add', files);
+  }
+}
+
 function humanSize(bytes: number): string {
   if (!bytes) return '';
   if (bytes < 1024) return `${bytes} B`;
@@ -62,7 +79,7 @@ function humanSize(bytes: number): string {
 </script>
 
 <template>
-  <section class="upload-card" :aria-label="title">
+  <section class="upload-card" :aria-label="title" @paste="onPaste">
     <header class="upload-card-title">
       <span>{{ title }}</span>
       <span class="muted" style="font-size: var(--font-sm)">
@@ -164,11 +181,12 @@ function humanSize(bytes: number): string {
         type="button"
         :class="['thumb thumb-add tap', addDisabled ? 'disabled' : '']"
         :aria-label="addDisabled ? `${title}已达 ${PER_KIND_CAP} 张上限` : `添加${title}`"
-        :title="addDisabled ? `最多 ${PER_KIND_CAP} 张` : '拍照或从相册选择'"
+        :title="addDisabled ? `最多 ${PER_KIND_CAP} 张` : '拍照、选择或粘贴截图'"
         :disabled="addDisabled"
         @click="pickFiles"
       >
         ＋
+        <span class="paste-hint">可粘贴截图</span>
       </button>
     </div>
 
@@ -186,12 +204,23 @@ function humanSize(bytes: number): string {
 </template>
 
 <style scoped>
-/* N-02: the `+` add-tile is a <button> with no default outline because the
-   base.css reset clears it. Restore a visible outline for keyboard users
-   (:focus-visible only, so mouse/touch taps stay visually clean). */
 .thumb-add:focus-visible {
   outline: 2px solid var(--color-primary);
   outline-offset: 2px;
   border-color: var(--color-primary);
+}
+
+.thumb-add {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+}
+
+.paste-hint {
+  font-size: 11px;
+  color: var(--color-text-muted, #999);
+  margin-top: 2px;
+  font-weight: 400;
 }
 </style>
