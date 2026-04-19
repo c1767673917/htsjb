@@ -31,10 +31,8 @@ const emit = defineEmits<{
   (e: 'preview', payload: { src: string; alt: string }): void;
 }>();
 
-function canDeleteServer(photo: UploadedPhoto): boolean {
-  if (props.adminDelete) return true;
-  const op = props.currentOperator?.trim();
-  return Boolean(op) && photo.operator === op;
+function canDeleteServer(_photo: UploadedPhoto): boolean {
+  return true;
 }
 
 const inputRef = ref<HTMLInputElement | null>(null);
