@@ -49,12 +49,20 @@ func (s *Service) IncomingRoot() string {
 	return filepath.Join(s.UploadsRoot(), ".incoming")
 }
 
+func (s *Service) InvoiceUploadsRoot() string {
+	return filepath.Join(s.UploadsRoot(), "invoices")
+}
+
+func (s *Service) InvoiceIncomingRoot() string {
+	return filepath.Join(s.InvoiceUploadsRoot(), ".incoming")
+}
+
 func (s *Service) TrashRoot() string {
 	return filepath.Join(s.UploadsRoot(), ".trash")
 }
 
 func (s *Service) EnsureLayout() error {
-	for _, dir := range []string{s.dataDir, s.UploadsRoot(), s.IncomingRoot(), s.TrashRoot(), filepath.Join(s.dataDir, "exports")} {
+	for _, dir := range []string{s.dataDir, s.UploadsRoot(), s.IncomingRoot(), s.TrashRoot(), s.InvoiceUploadsRoot(), s.InvoiceIncomingRoot(), filepath.Join(s.dataDir, "exports")} {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			return err
 		}
@@ -107,6 +115,57 @@ func (s *Service) ValidateOrderFilePath(year int, orderNo, filename string) (str
 		return "", apierror.Wrap(err, 500, "INTERNAL", "校验文件路径失败")
 	}
 	return fullPath, nil
+}
+
+func (s *Service) InvoiceDir(invoiceNo string) (string, error) {
+	if err := ValidatePathSegment(invoiceNo); err != nil {
+		return "", apierror.ErrFileNotFound
+	}
+	return s.ensureWithinUploads(filepath.Join(s.InvoiceUploadsRoot(), invoiceNo))
+}
+
+func (s *Service) ValidateInvoiceFilePath(invoiceNo, filename string) (string, error) {
+	if err := ValidatePathSegment(invoiceNo); err != nil {
+		return "", apierror.ErrFileNotFound
+	}
+	if err := ValidatePathSegment(filename); err != nil {
+		return "", apierror.ErrFileNotFound
+	}
+	fullPath, err := s.ensureWithinUploads(filepath.Join(s.InvoiceUploadsRoot(), invoiceNo, filename))
+	if err != nil {
+		return "", err
+	}
+	if info, err := os.Lstat(fullPath); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		return "", apierror.ErrFileNotFound
+	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return "", apierror.Wrap(err, 500, "INTERNAL", "校验文件路径失败")
+	}
+	return fullPath, nil
+}
+
+func (s *Service) AcquireInvoice(ctx context.Context, invoiceNo string) (func(), error) {
+	key := "inv:" + invoiceNo
+	actual, _ := s.locks.LoadOrStore(key, &sync.Mutex{})
+	mu := actual.(*sync.Mutex)
+
+	deadline := time.Now().Add(s.lockTimeout)
+	for {
+		if mu.TryLock() {
+			return mu.Unlock, nil
+		}
+		if time.Now().After(deadline) {
+			return nil, apierror.ErrOrderLocked
+		}
+		select {
+		case <-ctx.Done():
+			return nil, apierror.ErrOrderLocked
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+}
+
+func (s *Service) InvoiceIncomingDir(txID string) (string, error) {
+	return s.ensureWithinUploads(filepath.Join(s.InvoiceIncomingRoot(), txID))
 }
 
 func (s *Service) IncomingDir(txID string) (string, error) {

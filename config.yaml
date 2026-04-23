@@ -1,5 +1,6 @@
 listen: "0.0.0.0:8080"
 csv_path: "./21-25订单.csv"
+invoice_csv_path: "./油脂发票.csv"
 data_dir: "./data"
 db_path: "./data/app.db"
 admin_password: "admin123"

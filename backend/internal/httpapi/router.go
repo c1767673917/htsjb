@@ -16,6 +16,8 @@ import (
 
 	"product-collection-form/backend/internal/admin"
 	"product-collection-form/backend/internal/apierror"
+	"product-collection-form/backend/internal/invoices"
+	"product-collection-form/backend/internal/invoiceuploads"
 	"product-collection-form/backend/internal/metrics"
 	"product-collection-form/backend/internal/orders"
 	"product-collection-form/backend/internal/storage"
@@ -23,22 +25,26 @@ import (
 )
 
 type Router struct {
-	db      *sqlx.DB
-	orders  *orders.Service
-	storage *storage.Service
-	uploads *uploads.Service
-	admin   *admin.Service
-	distFS  fs.FS
+	db             *sqlx.DB
+	orders         *orders.Service
+	storage        *storage.Service
+	uploads        *uploads.Service
+	admin          *admin.Service
+	invoices       *invoices.Service
+	invoiceUploads *invoiceuploads.Service
+	distFS         fs.FS
 }
 
-func New(db *sqlx.DB, orderSvc *orders.Service, storageSvc *storage.Service, uploadSvc *uploads.Service, adminSvc *admin.Service, distFS fs.FS) *Router {
+func New(db *sqlx.DB, orderSvc *orders.Service, storageSvc *storage.Service, uploadSvc *uploads.Service, adminSvc *admin.Service, invoiceSvc *invoices.Service, invoiceUploadSvc *invoiceuploads.Service, distFS fs.FS) *Router {
 	return &Router{
-		db:      db,
-		orders:  orderSvc,
-		storage: storageSvc,
-		uploads: uploadSvc,
-		admin:   adminSvc,
-		distFS:  distFS,
+		db:             db,
+		orders:         orderSvc,
+		storage:        storageSvc,
+		uploads:        uploadSvc,
+		admin:          adminSvc,
+		invoices:       invoiceSvc,
+		invoiceUploads: invoiceUploadSvc,
+		distFS:         distFS,
 	}
 }
 
@@ -57,6 +63,12 @@ func (r *Router) Engine() *gin.Engine {
 	yearGroup.POST("/orders/:orderNo/uploads", r.uploads.HandleSubmit)
 	yearGroup.DELETE("/orders/:orderNo/uploads/:id", r.uploads.HandleUserDelete)
 
+	invGroup := api.Group("/invoices")
+	invGroup.GET("/search", r.handleInvoiceSearch)
+	invGroup.GET("/:invoiceNo", r.handleInvoiceDetail)
+	invGroup.POST("/:invoiceNo/uploads", r.invoiceUploads.HandleSubmit)
+	invGroup.DELETE("/:invoiceNo/uploads/:id", r.invoiceUploads.HandleDelete)
+
 	adminGroup := api.Group("/admin")
 	r.admin.RegisterRoutes(adminGroup)
 
@@ -64,6 +76,7 @@ func (r *Router) Engine() *gin.Engine {
 	engine.GET("/readyz", r.handleReady)
 	engine.GET("/metrics", gin.WrapH(metrics.Default.Handler()))
 	engine.GET("/files/y/:year/:orderNo/:filename", r.handleFile)
+	engine.GET("/files/invoices/:invoiceNo/:filename", r.handleInvoiceFile)
 	engine.NoRoute(r.handleSPA)
 	return engine
 }
@@ -151,6 +164,56 @@ func (r *Router) handleFile(c *gin.Context) {
 	}
 
 	fullPath, err := r.storage.ValidateOrderFilePath(year, orderNo, filename)
+	if err != nil {
+		writeError(c, apierror.ErrFileNotFound)
+		return
+	}
+	if _, err := os.Stat(fullPath); err != nil {
+		writeError(c, apierror.ErrFileNotFound)
+		return
+	}
+	c.Header("Cache-Control", "private, no-store")
+	c.File(fullPath)
+}
+
+func (r *Router) handleInvoiceSearch(c *gin.Context) {
+	limit, err := strconv.Atoi(c.DefaultQuery("limit", "20"))
+	if err != nil {
+		writeError(c, apierror.Wrap(err, http.StatusBadRequest, "BAD_REQUEST", "limit 参数无效"))
+		return
+	}
+	items, err := r.invoices.Search(c.Request.Context(), c.Query("q"), limit)
+	if err != nil {
+		writeError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"items": items})
+}
+
+func (r *Router) handleInvoiceDetail(c *gin.Context) {
+	detail, err := r.invoices.Detail(c.Request.Context(), c.Param("invoiceNo"))
+	if err != nil {
+		writeError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, detail)
+}
+
+func (r *Router) handleInvoiceFile(c *gin.Context) {
+	invoiceNo := c.Param("invoiceNo")
+	filename := c.Param("filename")
+
+	var count int
+	if err := r.db.GetContext(c.Request.Context(), &count, `SELECT COUNT(*) FROM invoice_uploads WHERE invoice_no = ? AND filename = ?`, invoiceNo, filename); err != nil {
+		writeError(c, apierror.Wrap(err, http.StatusInternalServerError, "INTERNAL", "读取文件索引失败"))
+		return
+	}
+	if count == 0 {
+		writeError(c, apierror.ErrFileNotFound)
+		return
+	}
+
+	fullPath, err := r.storage.ValidateInvoiceFilePath(invoiceNo, filename)
 	if err != nil {
 		writeError(c, apierror.ErrFileNotFound)
 		return
@@ -252,6 +315,8 @@ func routeTimeout(method, requestPath string) time.Duration {
 	case method == http.MethodPost && strings.HasPrefix(requestPath, "/api/admin/") && strings.HasSuffix(requestPath, "/rebuild-pdf"):
 		return 60 * time.Second
 	case method == http.MethodPost && strings.HasPrefix(requestPath, "/api/y/") && strings.HasSuffix(requestPath, "/uploads"):
+		return 120 * time.Second
+	case method == http.MethodPost && strings.HasPrefix(requestPath, "/api/invoices/") && strings.HasSuffix(requestPath, "/uploads"):
 		return 120 * time.Second
 	case method == http.MethodGet && strings.HasPrefix(requestPath, "/files/"):
 		return 120 * time.Second

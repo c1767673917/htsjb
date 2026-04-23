@@ -31,6 +31,8 @@ import (
 	"product-collection-form/backend/internal/apierror"
 	"product-collection-form/backend/internal/config"
 	"product-collection-form/backend/internal/httpapi/limits"
+	"product-collection-form/backend/internal/invoices"
+	"product-collection-form/backend/internal/invoiceuploads"
 	"product-collection-form/backend/internal/metrics"
 	"product-collection-form/backend/internal/orders"
 	"product-collection-form/backend/internal/storage"
@@ -40,16 +42,18 @@ import (
 const sessionCookieName = "admin_session"
 
 type Service struct {
-	db          *sqlx.DB
-	cfg         config.Config
-	orders      *orders.Service
-	storage     *storage.Service
-	uploads     *uploads.Service
-	limits      *limits.Manager
-	sessionKey  []byte
-	csrfSecret  []byte
-	limitMu     sync.Mutex
-	loginLimits map[string]*loginBucket
+	db             *sqlx.DB
+	cfg            config.Config
+	orders         *orders.Service
+	storage        *storage.Service
+	uploads        *uploads.Service
+	invoices       *invoices.Service
+	invoiceUploads *invoiceuploads.Service
+	limits         *limits.Manager
+	sessionKey     []byte
+	csrfSecret     []byte
+	limitMu        sync.Mutex
+	loginLimits    map[string]*loginBucket
 }
 
 type loginBucket struct {
@@ -62,19 +66,21 @@ type yearExportOrder struct {
 	DeliveryFiles []string
 }
 
-func NewService(db *sqlx.DB, cfg config.Config, orderSvc *orders.Service, storageSvc *storage.Service, uploadSvc *uploads.Service, limiter *limits.Manager) (*Service, error) {
+func NewService(db *sqlx.DB, cfg config.Config, orderSvc *orders.Service, storageSvc *storage.Service, uploadSvc *uploads.Service, invoiceSvc *invoices.Service, invoiceUploadSvc *invoiceuploads.Service, limiter *limits.Manager) (*Service, error) {
 	sessionKey := deriveStableKey(cfg, "admin-session")
 	csrfSecret := deriveStableKey(cfg, "admin-csrf")
 	return &Service{
-		db:          db,
-		cfg:         cfg,
-		orders:      orderSvc,
-		storage:     storageSvc,
-		uploads:     uploadSvc,
-		limits:      limiter,
-		sessionKey:  sessionKey,
-		csrfSecret:  csrfSecret,
-		loginLimits: map[string]*loginBucket{},
+		db:             db,
+		cfg:            cfg,
+		orders:         orderSvc,
+		storage:        storageSvc,
+		uploads:        uploadSvc,
+		invoices:       invoiceSvc,
+		invoiceUploads: invoiceUploadSvc,
+		limits:         limiter,
+		sessionKey:     sessionKey,
+		csrfSecret:     csrfSecret,
+		loginLimits:    map[string]*loginBucket{},
 	}, nil
 }
 
@@ -92,6 +98,10 @@ func (s *Service) RegisterRoutes(group *gin.RouterGroup) {
 	authed.GET("/:year/export.zip", s.handleYearExport)
 	authed.GET("/:year/export.csv", s.handleCSVExport)
 
+	authed.GET("/invoices", s.handleInvoiceList)
+	authed.GET("/invoices/export.csv", s.handleInvoiceCSVExport)
+	authed.GET("/invoices/:invoiceNo", s.handleInvoiceDetail)
+
 	mutating := authed.Group("")
 	mutating.Use(s.requireCSRF)
 	mutating.POST("/logout", s.handleLogout)
@@ -99,6 +109,8 @@ func (s *Service) RegisterRoutes(group *gin.RouterGroup) {
 	mutating.POST("/:year/orders/:orderNo/check", s.handleSetCheckStatus)
 	mutating.DELETE("/:year/orders/:orderNo/uploads/:id", s.handleDeleteUpload)
 	mutating.DELETE("/:year/orders/:orderNo", s.handleResetOrder)
+	mutating.DELETE("/invoices/:invoiceNo/uploads/:id", s.handleDeleteInvoiceUpload)
+	mutating.DELETE("/invoices/:invoiceNo", s.handleResetInvoice)
 }
 
 func (s *Service) requireSession(c *gin.Context) {
@@ -526,6 +538,98 @@ func (s *Service) handleCSVExport(c *gin.Context) {
 			strconv.Itoa(item.Counts["合同"]),
 			strconv.Itoa(item.Counts["发票"]),
 			strconv.Itoa(item.Counts["发货单"]),
+			strings.Join(item.Operators, "、"),
+			lastUpload,
+		})
+	}
+	w.Flush()
+}
+
+func (s *Service) handleInvoiceList(c *gin.Context) {
+	page, err := strconv.Atoi(c.DefaultQuery("page", "1"))
+	if err != nil {
+		writeError(c, apierror.Wrap(err, http.StatusBadRequest, "BAD_REQUEST", "page 参数无效"))
+		return
+	}
+	size, err := strconv.Atoi(c.DefaultQuery("size", "50"))
+	if err != nil {
+		writeError(c, apierror.Wrap(err, http.StatusBadRequest, "BAD_REQUEST", "size 参数无效"))
+		return
+	}
+	onlyUploaded := c.Query("onlyUploaded") == "true"
+	searchQuery := strings.TrimSpace(c.Query("q"))
+
+	result, err := s.invoices.AdminList(c.Request.Context(), page, size, searchQuery, onlyUploaded)
+	if err != nil {
+		writeError(c, apierror.Wrap(err, http.StatusInternalServerError, "INTERNAL", "读取发票列表失败"))
+		return
+	}
+	c.JSON(http.StatusOK, result)
+}
+
+func (s *Service) handleInvoiceDetail(c *gin.Context) {
+	detail, err := s.invoices.Detail(c.Request.Context(), c.Param("invoiceNo"))
+	if err != nil {
+		writeError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, detail)
+}
+
+func (s *Service) handleDeleteInvoiceUpload(c *gin.Context) {
+	invoiceNo := c.Param("invoiceNo")
+	uploadID, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil {
+		writeError(c, apierror.ErrBadRequest)
+		return
+	}
+	if err := s.invoiceUploads.DeleteUpload(c.Request.Context(), invoiceNo, uploadID); err != nil {
+		writeError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
+func (s *Service) handleResetInvoice(c *gin.Context) {
+	invoiceNo := c.Param("invoiceNo")
+	if err := s.invoiceUploads.ResetInvoice(c.Request.Context(), invoiceNo); err != nil {
+		writeError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
+func (s *Service) handleInvoiceCSVExport(c *gin.Context) {
+	onlyUploaded := c.Query("onlyUploaded") == "true"
+	searchQuery := strings.TrimSpace(c.Query("q"))
+
+	items, err := s.invoices.AdminExportAll(c.Request.Context(), searchQuery, onlyUploaded)
+	if err != nil {
+		writeError(c, apierror.Wrap(err, http.StatusInternalServerError, "INTERNAL", "读取导出数据失败"))
+		return
+	}
+
+	c.Header("Content-Type", "text/csv; charset=utf-8")
+	c.Header("Content-Disposition", `attachment; filename="发票列表.csv"`)
+	c.Writer.Write([]byte{0xEF, 0xBB, 0xBF}) // UTF-8 BOM for Excel
+	w := csv.NewWriter(c.Writer)
+	w.Write([]string{"发票号码", "客户", "销方", "开票日期", "已上传", "上传数量", "录入人", "最后上传时间"})
+	for _, item := range items {
+		lastUpload := ""
+		if item.LastUploadAt != nil {
+			lastUpload = item.LastUploadAt.Format("2006-01-02 15:04:05")
+		}
+		uploaded := "否"
+		if item.Uploaded {
+			uploaded = "是"
+		}
+		w.Write([]string{
+			item.InvoiceNo,
+			item.Customer,
+			item.Seller,
+			item.InvoiceDate,
+			uploaded,
+			strconv.Itoa(item.UploadCount),
 			strings.Join(item.Operators, "、"),
 			lastUpload,
 		})

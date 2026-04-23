@@ -231,12 +231,12 @@ func newIntegrationApp(t *testing.T, pdfBuilder integrationPDFBuilder) integrati
 	orderSvc := orders.NewService(conn, storageSvc)
 	limiter := limits.New(cfg.Concurrency)
 	uploadSvc := uploads.NewService(conn, cfg, orderSvc, storageSvc, pdfBuilder, limiter)
-	adminSvc, err := admin.NewService(conn, cfg, orderSvc, storageSvc, uploadSvc, limiter)
+	adminSvc, err := admin.NewService(conn, cfg, orderSvc, storageSvc, uploadSvc, nil, nil, limiter)
 	if err != nil {
 		t.Fatalf("create admin service: %v", err)
 	}
 	distFS := fstest.MapFS{"index.html": &fstest.MapFile{Data: []byte("<p>placeholder</p>")}}
-	router := httpapi.New(conn, orderSvc, storageSvc, uploadSvc, adminSvc, distFS).Engine()
+	router := httpapi.New(conn, orderSvc, storageSvc, uploadSvc, adminSvc, nil, nil, distFS).Engine()
 	return integrationApp{router: router, db: conn, storage: storageSvc, orders: orderSvc, uploads: uploadSvc}
 }
 

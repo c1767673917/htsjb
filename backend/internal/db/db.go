@@ -15,7 +15,7 @@ import (
 	"product-collection-form/backend/internal/config"
 )
 
-const currentUserVersion = 3
+const currentUserVersion = 4
 
 const driverName = "sqlite-app"
 
@@ -157,6 +157,58 @@ func Migrate(ctx context.Context, conn *sqlx.DB) error {
 		for _, stmt := range stmts {
 			if _, err := tx.ExecContext(ctx, stmt); err != nil {
 				return fmt.Errorf("migrate schema v3: %w", err)
+			}
+		}
+	}
+
+	if version < 4 {
+		stmts := []string{
+			`CREATE TABLE IF NOT EXISTS invoices (
+				invoice_no TEXT PRIMARY KEY,
+				customer TEXT NOT NULL,
+				customer_clean TEXT NOT NULL,
+				seller TEXT NOT NULL,
+				invoice_date TEXT NOT NULL,
+				csv_present INTEGER NOT NULL DEFAULT 1
+			)`,
+			`CREATE INDEX IF NOT EXISTS idx_invoices_no_like ON invoices(invoice_no)`,
+			`CREATE TABLE IF NOT EXISTS invoice_lines (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				invoice_no TEXT NOT NULL,
+				year INTEGER NOT NULL,
+				invoice_date TEXT NOT NULL,
+				seller TEXT NOT NULL,
+				customer TEXT NOT NULL,
+				product TEXT NOT NULL,
+				quantity REAL NOT NULL,
+				amount REAL NOT NULL,
+				tax_amount REAL NOT NULL,
+				total_with_tax REAL NOT NULL,
+				tax_rate TEXT NOT NULL,
+				source_hash TEXT NOT NULL UNIQUE,
+				source_line INTEGER NOT NULL,
+				FOREIGN KEY (invoice_no) REFERENCES invoices(invoice_no)
+			)`,
+			`CREATE INDEX IF NOT EXISTS idx_invoice_lines_no ON invoice_lines(invoice_no)`,
+			`CREATE TABLE IF NOT EXISTS invoice_uploads (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				invoice_no TEXT NOT NULL,
+				seq INTEGER NOT NULL,
+				filename TEXT NOT NULL,
+				original_name TEXT NOT NULL DEFAULT '',
+				content_type TEXT NOT NULL DEFAULT 'image/jpeg',
+				byte_size INTEGER NOT NULL,
+				sha256 TEXT NOT NULL,
+				operator TEXT NOT NULL DEFAULT '',
+				uploaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+				UNIQUE (invoice_no, seq),
+				FOREIGN KEY (invoice_no) REFERENCES invoices(invoice_no)
+			)`,
+			`CREATE INDEX IF NOT EXISTS idx_invoice_uploads_no ON invoice_uploads(invoice_no)`,
+		}
+		for _, stmt := range stmts {
+			if _, err := tx.ExecContext(ctx, stmt); err != nil {
+				return fmt.Errorf("migrate schema v4: %w", err)
 			}
 		}
 	}

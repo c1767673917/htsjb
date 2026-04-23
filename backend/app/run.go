@@ -20,6 +20,9 @@ import (
 	"product-collection-form/backend/internal/httpapi"
 	"product-collection-form/backend/internal/httpapi/limits"
 	"product-collection-form/backend/internal/ingest"
+	"product-collection-form/backend/internal/invoiceingest"
+	"product-collection-form/backend/internal/invoices"
+	"product-collection-form/backend/internal/invoiceuploads"
 	"product-collection-form/backend/internal/orders"
 	"product-collection-form/backend/internal/pdfmerge"
 	"product-collection-form/backend/internal/storage"
@@ -45,6 +48,12 @@ func Run(args []string) int {
 	case "import-csv":
 		if err := importCSV(args); err != nil {
 			slog.Error("import-csv failed", "error", err)
+			return 1
+		}
+		return 0
+	case "import-invoice-csv":
+		if err := importInvoiceCSV(args); err != nil {
+			slog.Error("import-invoice-csv failed", "error", err)
 			return 1
 		}
 		return 0
@@ -80,6 +89,17 @@ func serve(args []string) error {
 		}
 	}
 
+	invoiceImporter := invoiceingest.New(conn)
+	needsInvoiceImport, err := invoiceImporter.NeedsImport(context.Background())
+	if err != nil {
+		return fmt.Errorf("check invoice import state: %w", err)
+	}
+	if needsInvoiceImport {
+		if _, err := invoiceImporter.ImportCSV(context.Background(), cfg.InvoiceCSVPath); err != nil {
+			return fmt.Errorf("initial invoice csv import: %w", err)
+		}
+	}
+
 	distFS, err := fs.Sub(frontendembed.DistFS, "frontend/dist")
 	if err != nil {
 		return fmt.Errorf("resolve embedded dist: %w", err)
@@ -88,11 +108,13 @@ func serve(args []string) error {
 	orderSvc := orders.NewService(conn, storageSvc)
 	pdfSvc := pdfmerge.New(limiter)
 	uploadSvc := uploads.NewService(conn, cfg, orderSvc, storageSvc, pdfSvc, limiter)
-	adminSvc, err := admin.NewService(conn, cfg, orderSvc, storageSvc, uploadSvc, limiter)
+	invoiceSvc := invoices.NewService(conn, storageSvc)
+	invoiceUploadSvc := invoiceuploads.NewService(conn, cfg, storageSvc, limiter)
+	adminSvc, err := admin.NewService(conn, cfg, orderSvc, storageSvc, uploadSvc, invoiceSvc, invoiceUploadSvc, limiter)
 	if err != nil {
 		return err
 	}
-	router := httpapi.New(conn, orderSvc, storageSvc, uploadSvc, adminSvc, distFS)
+	router := httpapi.New(conn, orderSvc, storageSvc, uploadSvc, adminSvc, invoiceSvc, invoiceUploadSvc, distFS)
 
 	server := &http.Server{
 		Addr:              cfg.Listen,
@@ -173,6 +195,51 @@ func importCSV(args []string) error {
 		return err
 	}
 	slog.Info("csv imported", "rows_read", stats.RowsRead, "rows_inserted", stats.RowsInserted, "orders_touched", stats.OrdersTouched)
+	return nil
+}
+
+func importInvoiceCSV(args []string) error {
+	flags := flag.NewFlagSet("import-invoice-csv", flag.ContinueOnError)
+	configPath := flags.String("config", "config.yaml", "config file path")
+	reimport := flags.Bool("reimport", false, "force a full CSV re-import")
+	dryRun := flags.Bool("dry-run", false, "validate CSV without writing to the database")
+	errorReport := flags.String("error-report", "", "write CSV validation errors to this report file")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+
+	cfg, conn, _, _, _, err := bootstrap(*configPath, config.LoadOptions{AllowUnsafeAdminPassword: true})
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+
+	importer := invoiceingest.New(conn)
+
+	if *dryRun {
+		stats, err := importer.ValidateCSV(context.Background(), cfg.InvoiceCSVPath, *errorReport)
+		if err != nil {
+			return err
+		}
+		slog.Info("invoice csv dry-run finished", "rows_read", stats.RowsRead, "valid_rows", stats.ValidRows, "invalid_rows", stats.InvalidRows, "report_written", stats.ReportWritten)
+		return nil
+	}
+
+	if !*reimport {
+		needsImport, err := importer.NeedsImport(context.Background())
+		if err != nil {
+			return fmt.Errorf("check import state: %w", err)
+		}
+		if !needsImport {
+			slog.Info("invoice csv import skipped", "reason", "already imported", "hint", "use --reimport to force full refresh")
+			return nil
+		}
+	}
+	stats, err := importer.ImportCSV(context.Background(), cfg.InvoiceCSVPath)
+	if err != nil {
+		return err
+	}
+	slog.Info("invoice csv imported", "rows_read", stats.RowsRead, "rows_inserted", stats.RowsInserted, "invoices_touched", stats.InvoicesTouched)
 	return nil
 }
 

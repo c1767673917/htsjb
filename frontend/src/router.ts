@@ -9,6 +9,7 @@
 
 import { createRouter, createWebHistory, type RouteRecordRaw } from 'vue-router';
 import CollectionView from '@/views/CollectionView.vue';
+import InvoiceView from '@/views/InvoiceView.vue';
 import AdminLoginView from '@/views/AdminLoginView.vue';
 import AdminView from '@/views/AdminView.vue';
 import { useAdminStore } from '@/stores/admin';
@@ -37,6 +38,20 @@ const collectionRoutes: RouteRecordRaw[] = YEARS.flatMap((year) => [
 const routes: RouteRecordRaw[] = [
   { path: '/', redirect: '/y2021' },
   ...collectionRoutes,
+  {
+    path: '/invoices',
+    name: 'invoices',
+    component: InvoiceView,
+    props: { operator: '' },
+    meta: { title: '发票录入' },
+  },
+  {
+    path: '/invoices/:operator',
+    name: 'invoices-operator',
+    component: InvoiceView,
+    props: (route) => ({ operator: String(route.params.operator ?? '') }),
+    meta: { title: '发票录入' },
+  },
   {
     path: '/admin/login',
     name: 'admin-login',

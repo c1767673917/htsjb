@@ -177,7 +177,7 @@ func newAdminTestEnvWithBuilder(t *testing.T, builder uploads.PDFBuilder) adminT
 	orderSvc := orders.NewService(conn, storageSvc)
 	limiter := limits.New(cfg.Concurrency)
 	uploadSvc := uploads.NewService(conn, cfg, orderSvc, storageSvc, builder, limiter)
-	adminSvc, err := NewService(conn, cfg, orderSvc, storageSvc, uploadSvc, limiter)
+	adminSvc, err := NewService(conn, cfg, orderSvc, storageSvc, uploadSvc, nil, nil, limiter)
 	if err != nil {
 		t.Fatalf("create admin service: %v", err)
 	}
@@ -195,7 +195,7 @@ func rebuildAdminRouter(t *testing.T, env adminTestEnv) *gin.Engine {
 	orderSvc := orders.NewService(env.db, env.storage)
 	limiter := limits.New(env.cfg.Concurrency)
 	uploadSvc := uploads.NewService(env.db, env.cfg, orderSvc, env.storage, adminPDFBuilder{}, limiter)
-	adminSvc, err := NewService(env.db, env.cfg, orderSvc, env.storage, uploadSvc, limiter)
+	adminSvc, err := NewService(env.db, env.cfg, orderSvc, env.storage, uploadSvc, nil, nil, limiter)
 	if err != nil {
 		t.Fatalf("recreate admin service: %v", err)
 	}

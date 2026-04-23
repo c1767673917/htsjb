@@ -12,9 +12,17 @@ import {
   type AdminOrderRow,
   type AdminYearStat,
   type CheckStatus,
+  type InvoiceAdminList,
+  type InvoiceAdminListItem,
+  type InvoiceDetail,
   type OrderDetail,
 } from '@/lib/api';
 import { useUiStore } from './ui';
+
+export interface AdminInvoiceFilter {
+  onlyUploaded: boolean;
+  q: string;
+}
 
 export interface AdminOrdersFilter {
   onlyUploaded: boolean;
@@ -41,6 +49,155 @@ export const useAdminStore = defineStore('admin', () => {
   const detailLoading = ref<boolean>(false);
 
   const isEmpty = computed(() => !orderList.value || orderList.value.items.length === 0);
+
+  // --- Invoice admin state ---
+  const adminTab = ref<'orders' | 'invoices'>('orders');
+  const invoiceList = ref<InvoiceAdminList | null>(null);
+  const invoiceListLoading = ref<boolean>(false);
+  const invoicePage = ref<number>(1);
+  const invoicePageSize = ref<number>(50);
+  const invoiceFilters = ref<AdminInvoiceFilter>({ onlyUploaded: false, q: '' });
+  const currentInvoiceRow = ref<InvoiceAdminListItem | null>(null);
+  const currentInvoiceDetail = ref<InvoiceDetail | null>(null);
+  const invoiceDetailLoading = ref<boolean>(false);
+
+  let invoiceListAbort: AbortController | null = null;
+  let invoiceListSeq = 0;
+  let invoiceDetailAbort: AbortController | null = null;
+  let invoiceDetailSeq = 0;
+  let invoiceCacheBust = 0;
+
+  function stampInvoiceUploadUrls(detail: InvoiceDetail) {
+    if (invoiceCacheBust === 0) return;
+    const suffix = `?_v=${invoiceCacheBust}`;
+    for (const u of detail.uploads) {
+      u.url += suffix;
+    }
+  }
+
+  function setAdminTab(tab: 'orders' | 'invoices') {
+    adminTab.value = tab;
+  }
+
+  function setInvoiceFilters(next: Partial<AdminInvoiceFilter>) {
+    invoiceFilters.value = { ...invoiceFilters.value, ...next };
+    invoicePage.value = 1;
+  }
+
+  function setInvoicePage(p: number) {
+    invoicePage.value = Math.max(1, p);
+  }
+
+  async function loadInvoices() {
+    if (invoiceListAbort) invoiceListAbort.abort();
+    invoiceListAbort = new AbortController();
+    const mySeq = ++invoiceListSeq;
+    const signal = invoiceListAbort.signal;
+    invoiceListLoading.value = true;
+    try {
+      const resp = await adminApi.invoiceList(
+        {
+          page: invoicePage.value,
+          size: invoicePageSize.value,
+          q: invoiceFilters.value.q,
+          onlyUploaded: invoiceFilters.value.onlyUploaded,
+        },
+        signal,
+      );
+      if (mySeq !== invoiceListSeq) return;
+      invoiceList.value = resp;
+    } catch (err) {
+      if ((err as Error).name === 'AbortError') return;
+      if (mySeq !== invoiceListSeq) return;
+      const ui = useUiStore();
+      ui.error(err instanceof ApiError ? err.message : '加载发票列表失败');
+    } finally {
+      if (mySeq === invoiceListSeq) invoiceListLoading.value = false;
+    }
+  }
+
+  async function openInvoiceRow(row: InvoiceAdminListItem) {
+    currentInvoiceRow.value = row;
+    currentInvoiceDetail.value = null;
+    invoiceDetailLoading.value = true;
+    if (invoiceDetailAbort) invoiceDetailAbort.abort();
+    invoiceDetailAbort = new AbortController();
+    const mySeq = ++invoiceDetailSeq;
+    const signal = invoiceDetailAbort.signal;
+    try {
+      const resp = await adminApi.invoiceDetail(row.invoiceNo, signal);
+      if (mySeq !== invoiceDetailSeq) return;
+      if (currentInvoiceRow.value?.invoiceNo !== row.invoiceNo) return;
+      stampInvoiceUploadUrls(resp);
+      currentInvoiceDetail.value = resp;
+    } catch (err) {
+      if ((err as Error).name === 'AbortError') return;
+      if (mySeq !== invoiceDetailSeq) return;
+      const ui = useUiStore();
+      ui.error(err instanceof ApiError ? err.message : '加载发票详情失败');
+    } finally {
+      if (mySeq === invoiceDetailSeq) invoiceDetailLoading.value = false;
+    }
+  }
+
+  function closeInvoiceRow() {
+    currentInvoiceRow.value = null;
+    currentInvoiceDetail.value = null;
+    invoiceDetailLoading.value = false;
+    if (invoiceDetailAbort) {
+      invoiceDetailAbort.abort();
+      invoiceDetailAbort = null;
+    }
+    invoiceDetailSeq += 1;
+  }
+
+  async function refreshCurrentInvoiceRow() {
+    if (!currentInvoiceRow.value) return;
+    const targetNo = currentInvoiceRow.value.invoiceNo;
+    if (invoiceDetailAbort) invoiceDetailAbort.abort();
+    invoiceDetailAbort = new AbortController();
+    const mySeq = ++invoiceDetailSeq;
+    const signal = invoiceDetailAbort.signal;
+    try {
+      const resp = await adminApi.invoiceDetail(targetNo, signal);
+      if (mySeq !== invoiceDetailSeq) return;
+      if (currentInvoiceRow.value?.invoiceNo !== targetNo) return;
+      stampInvoiceUploadUrls(resp);
+      currentInvoiceDetail.value = resp;
+    } catch {
+      /* surfaced by loadInvoices path */
+    }
+  }
+
+  async function deleteInvoiceUpload(id: number): Promise<boolean> {
+    const ui = useUiStore();
+    if (!currentInvoiceRow.value) return false;
+    try {
+      await adminApi.deleteInvoiceUpload(currentInvoiceRow.value.invoiceNo, id, csrfToken.value);
+      ui.success('已删除');
+      invoiceCacheBust++;
+      await Promise.all([refreshCurrentInvoiceRow(), loadInvoices()]);
+      return true;
+    } catch (err) {
+      ui.error(err instanceof ApiError ? err.message : '删除失败');
+      return false;
+    }
+  }
+
+  async function resetInvoice(): Promise<boolean> {
+    const ui = useUiStore();
+    if (!currentInvoiceRow.value) return false;
+    try {
+      await adminApi.resetInvoice(currentInvoiceRow.value.invoiceNo, csrfToken.value);
+      ui.success('已重置');
+      closeInvoiceRow();
+      await loadInvoices();
+      return true;
+    } catch (err) {
+      ui.error(err instanceof ApiError ? err.message : '重置失败');
+      return false;
+    }
+  }
 
   // M-26: year switch / filter change / pagination must cancel any in-flight
   // list fetch so responses from the previous year cannot overwrite the new
@@ -122,6 +279,19 @@ export const useAdminStore = defineStore('admin', () => {
     if (detailAbort) {
       detailAbort.abort();
       detailAbort = null;
+    }
+    // Clear invoice state
+    adminTab.value = 'orders';
+    invoiceList.value = null;
+    currentInvoiceRow.value = null;
+    currentInvoiceDetail.value = null;
+    if (invoiceListAbort) {
+      invoiceListAbort.abort();
+      invoiceListAbort = null;
+    }
+    if (invoiceDetailAbort) {
+      invoiceDetailAbort.abort();
+      invoiceDetailAbort = null;
     }
   }
 
@@ -332,6 +502,16 @@ export const useAdminStore = defineStore('admin', () => {
     currentDetail,
     detailLoading,
     isEmpty,
+    // Invoice admin
+    adminTab,
+    invoiceList,
+    invoiceListLoading,
+    invoicePage,
+    invoicePageSize,
+    invoiceFilters,
+    currentInvoiceRow,
+    currentInvoiceDetail,
+    invoiceDetailLoading,
     ping,
     login,
     logout,
@@ -347,5 +527,14 @@ export const useAdminStore = defineStore('admin', () => {
     rebuildPdf,
     setCheckStatus,
     refreshCurrentRow,
+    // Invoice admin methods
+    setAdminTab,
+    setInvoiceFilters,
+    setInvoicePage,
+    loadInvoices,
+    openInvoiceRow,
+    closeInvoiceRow,
+    deleteInvoiceUpload,
+    resetInvoice,
   };
 });

@@ -14,6 +14,7 @@ import (
 type Config struct {
 	Listen          string      `yaml:"listen"`
 	CSVPath         string      `yaml:"csv_path"`
+	InvoiceCSVPath  string      `yaml:"invoice_csv_path"`
 	DataDir         string      `yaml:"data_dir"`
 	DBPath          string      `yaml:"db_path"`
 	AdminPassword   string      `yaml:"admin_password"`
@@ -60,6 +61,7 @@ func Default() Config {
 	return Config{
 		Listen:          "0.0.0.0:8080",
 		CSVPath:         "./21-25订单.csv",
+		InvoiceCSVPath:  "./油脂发票.csv",
 		DataDir:         "./data",
 		AdminPassword:   "CHANGE-ME",
 		SessionTTLHours: 12,
@@ -110,6 +112,7 @@ func Load(path string, options ...LoadOptions) (Config, error) {
 
 	applyEnv(&cfg)
 	cfg.CSVPath = filepath.Clean(cfg.CSVPath)
+	cfg.InvoiceCSVPath = filepath.Clean(cfg.InvoiceCSVPath)
 	cfg.DataDir = filepath.Clean(cfg.DataDir)
 	if strings.TrimSpace(cfg.DBPath) == "" {
 		cfg.DBPath = filepath.Join(cfg.DataDir, "app.db")
@@ -125,6 +128,7 @@ func Load(path string, options ...LoadOptions) (Config, error) {
 func applyEnv(cfg *Config) {
 	setString(&cfg.Listen, "APP_LISTEN")
 	setString(&cfg.CSVPath, "APP_CSV_PATH")
+	setString(&cfg.InvoiceCSVPath, "APP_INVOICE_CSV_PATH")
 	setString(&cfg.DataDir, "APP_DATA_DIR")
 	setString(&cfg.DBPath, "APP_DB_PATH")
 	setString(&cfg.AdminPassword, "APP_ADMIN_PASSWORD")

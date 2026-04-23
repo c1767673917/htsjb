@@ -395,4 +395,128 @@ export const adminApi = {
       { method: 'POST', adminCsrf: csrf, body: { status } },
     );
   },
+  invoiceList(
+    params: { page: number; size: number; q?: string; onlyUploaded?: boolean },
+    signal?: AbortSignal,
+  ) {
+    return request<InvoiceAdminList>('/api/admin/invoices', {
+      query: {
+        page: params.page,
+        size: params.size,
+        q: params.q && params.q.trim().length > 0 ? params.q.trim() : undefined,
+        onlyUploaded: params.onlyUploaded ? true : undefined,
+      },
+      signal,
+    });
+  },
+  invoiceDetail(invoiceNo: string, signal?: AbortSignal) {
+    const enc = encodeURIComponent(invoiceNo);
+    return request<InvoiceDetail>(`/api/admin/invoices/${enc}`, { signal });
+  },
+  deleteInvoiceUpload(invoiceNo: string, id: number, csrf: string) {
+    const enc = encodeURIComponent(invoiceNo);
+    return request<{ ok: true }>(`/api/admin/invoices/${enc}/uploads/${id}`, {
+      method: 'DELETE',
+      adminCsrf: csrf,
+    });
+  },
+  resetInvoice(invoiceNo: string, csrf: string) {
+    const enc = encodeURIComponent(invoiceNo);
+    return request<{ ok: true }>(`/api/admin/invoices/${enc}`, {
+      method: 'DELETE',
+      adminCsrf: csrf,
+    });
+  },
+  invoiceCsvExportUrl(filters?: { q?: string; onlyUploaded?: boolean }) {
+    const params = new URLSearchParams();
+    if (filters?.q) params.set('q', filters.q);
+    if (filters?.onlyUploaded) params.set('onlyUploaded', 'true');
+    const qs = params.toString();
+    return '/api/admin/invoices/export.csv' + (qs ? `?${qs}` : '');
+  },
+};
+
+// === Invoice Types ===
+
+export interface InvoiceSearchItem {
+  invoiceNo: string;
+  customer: string;
+  invoiceDate: string;
+  uploaded: boolean;
+  uploadCount: number;
+}
+
+export interface InvoiceLine {
+  product: string;
+  quantity: number;
+  amount: number;
+  taxAmount: number;
+  totalWithTax: number;
+  taxRate: string;
+}
+
+export interface InvoiceUploadFile {
+  id: number;
+  seq: number;
+  filename: string;
+  url: string;
+  size: number;
+  contentType: string;
+  operator?: string;
+}
+
+export interface InvoiceDetail {
+  invoiceNo: string;
+  customer: string;
+  seller: string;
+  invoiceDate: string;
+  lines: InvoiceLine[];
+  uploads: InvoiceUploadFile[];
+}
+
+export interface InvoiceAdminListItem {
+  invoiceNo: string;
+  customer: string;
+  invoiceDate: string;
+  uploaded: boolean;
+  uploadCount: number;
+  operators: string[];
+  lastUploadAt: string | null;
+}
+
+export interface InvoiceAdminList {
+  page: number;
+  size: number;
+  total: number;
+  items: InvoiceAdminListItem[];
+}
+
+// === Invoice API (public, no auth) ===
+
+export const invoiceApi = {
+  async search(q: string, limit = 20, signal?: AbortSignal) {
+    const res = await request<{ items: InvoiceSearchItem[] }>('/api/invoices/search', {
+      query: { q, limit },
+      signal,
+    });
+    return res.items;
+  },
+  detail(invoiceNo: string, signal?: AbortSignal) {
+    const enc = encodeURIComponent(invoiceNo);
+    return request<InvoiceDetail>(`/api/invoices/${enc}`, { signal });
+  },
+  submit(invoiceNo: string, form: FormData) {
+    const enc = encodeURIComponent(invoiceNo);
+    return request<{ uploadCount: number }>(`/api/invoices/${enc}/uploads`, {
+      method: 'POST',
+      body: form,
+      multipart: true,
+    });
+  },
+  deleteUpload(invoiceNo: string, id: number) {
+    const enc = encodeURIComponent(invoiceNo);
+    return request<{ ok: true }>(`/api/invoices/${enc}/uploads/${id}`, {
+      method: 'DELETE',
+    });
+  },
 };
