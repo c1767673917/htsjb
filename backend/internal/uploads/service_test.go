@@ -231,13 +231,13 @@ func TestSubmitErrorCodesAndAtomicPaths(t *testing.T) {
 
 	t.Run("429 when ip upload rate limit exceeded", func(t *testing.T) {
 		ip := "192.168.1.55"
-		for i := 0; i < 20; i++ {
+		for i := 0; i < 6000; i++ {
 			if !env.uploads.allowUploadAttempt(ip) {
 				t.Fatalf("attempt %d should be allowed", i+1)
 			}
 		}
 		if env.uploads.allowUploadAttempt(ip) {
-			t.Fatalf("expected 21st attempt to be rate limited")
+			t.Fatalf("expected 6001st attempt to be rate limited")
 		}
 	})
 }

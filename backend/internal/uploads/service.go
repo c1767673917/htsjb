@@ -696,7 +696,7 @@ func (s *Service) allowUploadAttempt(ip string) bool {
 	s.sweepUploadRateLimits(now)
 
 	value, _ := s.uploadRateLimits.LoadOrStore(ip, &uploadRateBucket{
-		limiter:  rate.NewLimiter(rate.Every(time.Minute/600), 600),
+		limiter:  rate.NewLimiter(rate.Every(time.Minute/6000), 6000),
 		lastSeen: now,
 	})
 	bucket := value.(*uploadRateBucket)
