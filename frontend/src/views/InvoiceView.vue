@@ -23,10 +23,12 @@ const {
   submitting,
   stagedCount,
   operator,
+  yearProgress,
 } = storeToRefs(store);
 
 function init(op: string) {
   store.setOperator(op);
+  void store.fetchProgress();
 }
 
 onMounted(() => init(props.operator ?? ''));
@@ -222,12 +224,28 @@ async function onUserDelete(file: InvoiceUploadFile) {
         />
       </template>
       <template v-else>
+        <section v-if="yearProgress.length > 0" class="card" style="padding: 16px">
+          <h2 style="margin: 0 0 12px 0; font-size: var(--font-md)">上传进度</h2>
+          <div class="year-progress-list">
+            <div v-for="yp in yearProgress" :key="yp.year" class="year-progress-item">
+              <div class="year-progress-text">
+                <strong>{{ yp.year }} 年</strong>
+                <span> · 共 {{ yp.total }} 张</span>
+                <span> · 已上传 {{ yp.uploaded }}</span>
+                <span> · {{ Math.round(yp.percent * 100) }}%</span>
+              </div>
+              <div class="progress-bar" aria-hidden="true">
+                <span :style="{ width: `${Math.min(yp.percent * 100, 100).toFixed(1)}%` }" />
+              </div>
+            </div>
+          </div>
+        </section>
         <section class="card" style="padding: 16px">
           <h2 style="margin: 0 0 8px 0; font-size: var(--font-md)">如何使用</h2>
           <ol class="muted" style="padding-left: 20px; margin: 0; line-height: 1.7">
             <li>在顶部搜索框输入 发票号码 的任意 2 位以上字符。</li>
             <li>点击结果行打开发票详情。</li>
-            <li>拍照、选择图片或 PDF 文件上传。</li>
+            <li>拍照、选择 1 个图片或 PDF 文件上传。</li>
             <li>点击底部「提交」一次性上传本次新增的文件。</li>
           </ol>
         </section>
@@ -277,5 +295,19 @@ async function onUserDelete(file: InvoiceUploadFile) {
   margin: 6px 2px 0;
   color: var(--color-text-muted);
   font-size: var(--font-sm);
+}
+.year-progress-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.year-progress-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.year-progress-text {
+  font-size: var(--font-sm);
+  color: var(--color-text);
 }
 </style>

@@ -10,11 +10,12 @@ import {
   invoiceApi,
   type InvoiceDetail,
   type InvoiceSearchItem,
+  type InvoiceYearProgress,
 } from '@/lib/api';
 import { processImage, type PipelineResult } from '@/lib/imagePipeline';
 import { useUiStore } from './ui';
 
-export const PER_INVOICE_CAP = 50;
+export const PER_INVOICE_CAP = 1;
 
 /** Staged (not yet submitted) file in the UI. */
 export interface StagedFile {
@@ -37,6 +38,7 @@ function makeId(): string {
 
 export const useInvoiceStore = defineStore('invoice', () => {
   const operator = ref<string>('');
+  const yearProgress = ref<InvoiceYearProgress[]>([]);
   const searchQuery = ref<string>('');
   const searchResults = ref<InvoiceSearchItem[]>([]);
   const searching = ref<boolean>(false);
@@ -44,11 +46,15 @@ export const useInvoiceStore = defineStore('invoice', () => {
   const staged = ref<StagedFile[]>([]);
   const submitting = ref<boolean>(false);
 
+  const uploadedCount = computed(() => currentDetail.value?.uploads.length ?? 0);
   const stagedCount = computed(() => staged.value.length);
+  const totalCount = computed(() => uploadedCount.value + stagedCount.value);
   const canSubmit = computed(() => stagedCount.value > 0 && !submitting.value);
 
   let searchSeq = 0;
   let searchAbort: AbortController | null = null;
+  let progressSeq = 0;
+  let progressAbort: AbortController | null = null;
   let detailSeq = 0;
   let detailAbort: AbortController | null = null;
   let cacheBust = 0;
@@ -58,6 +64,22 @@ export const useInvoiceStore = defineStore('invoice', () => {
     const suffix = `?_v=${cacheBust}`;
     for (const u of detail.uploads) {
       u.url += suffix;
+    }
+  }
+
+  async function fetchProgress() {
+    const mySeq = ++progressSeq;
+    if (progressAbort) progressAbort.abort();
+    progressAbort = new AbortController();
+    try {
+      const items = await invoiceApi.progress(progressAbort.signal);
+      if (mySeq !== progressSeq) return;
+      yearProgress.value = items;
+    } catch (err) {
+      if ((err as Error).name === 'AbortError') return;
+      if (mySeq !== progressSeq) return;
+      const ui = useUiStore();
+      ui.error(err instanceof ApiError ? err.message : '获取进度失败');
     }
   }
 
@@ -143,8 +165,8 @@ export const useInvoiceStore = defineStore('invoice', () => {
   async function stageFiles(files: File[]): Promise<void> {
     const ui = useUiStore();
     for (const file of files) {
-      if (staged.value.length >= PER_INVOICE_CAP) {
-        ui.error(`最多上传 ${PER_INVOICE_CAP} 个文件`);
+      if (totalCount.value >= PER_INVOICE_CAP) {
+        ui.error(`发票最多上传 ${PER_INVOICE_CAP} 个文件`);
         return;
       }
       const isPdf = file.type === 'application/pdf' ||
@@ -217,7 +239,7 @@ export const useInvoiceStore = defineStore('invoice', () => {
       await invoiceApi.deleteUpload(currentDetail.value.invoiceNo, id);
       ui.success('已删除');
       cacheBust++;
-      await refreshDetail();
+      await Promise.all([refreshDetail(), fetchProgress()]);
       return true;
     } catch (err) {
       ui.error(err instanceof ApiError ? err.message : '删除失败');
@@ -254,7 +276,7 @@ export const useInvoiceStore = defineStore('invoice', () => {
       await invoiceApi.submit(currentDetail.value.invoiceNo, form);
       clearStaged();
       cacheBust++;
-      await refreshDetail();
+      await Promise.all([refreshDetail(), fetchProgress()]);
       ui.success('提交成功');
       return true;
     } catch (err) {
@@ -268,6 +290,7 @@ export const useInvoiceStore = defineStore('invoice', () => {
 
   return {
     operator,
+    yearProgress,
     searchQuery,
     searchResults,
     searching,
@@ -277,6 +300,7 @@ export const useInvoiceStore = defineStore('invoice', () => {
     stagedCount,
     canSubmit,
     setOperator,
+    fetchProgress,
     runSearch,
     openInvoice,
     closeDetail,

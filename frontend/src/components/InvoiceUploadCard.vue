@@ -28,6 +28,7 @@ const emit = defineEmits<{
 const inputRef = ref<HTMLInputElement | null>(null);
 
 const totalCount = computed(() => props.serverFiles.length + props.stagedFiles.length);
+const stagedCap = computed(() => Math.max(PER_INVOICE_CAP - props.serverFiles.length, 0));
 const addDisabled = computed(() => totalCount.value >= PER_INVOICE_CAP);
 
 function isImage(contentType: string): boolean {
@@ -84,7 +85,7 @@ function humanSize(bytes: number): string {
     <header class="upload-card-title">
       <span>发票文件上传</span>
       <span class="muted" style="font-size: var(--font-sm)">
-        已提交 {{ serverFiles.length }}<span v-if="!readOnly"> · 待提交 {{ stagedFiles.length }}/{{ PER_INVOICE_CAP }}</span>
+        已提交 {{ serverFiles.length }}<span v-if="!readOnly"> · 待提交 {{ stagedFiles.length }}/{{ stagedCap }}</span>
       </span>
     </header>
 
@@ -201,7 +202,6 @@ function humanSize(bytes: number): string {
       ref="inputRef"
       type="file"
       accept="image/*,.pdf,application/pdf"
-      multiple
       class="sr-only"
       @change="onChange"
     />

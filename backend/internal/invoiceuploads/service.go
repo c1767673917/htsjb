@@ -39,10 +39,15 @@ type Service struct {
 	cfg     config.Config
 	storage *storage.Service
 	limits  *limits.Manager
+	cache   invoiceCacheInvalidator
 
 	uploadRateLimits sync.Map
 	rateLimitMu      sync.Mutex
 	lastRateSweep    time.Time
+}
+
+type invoiceCacheInvalidator interface {
+	InvalidateCache()
 }
 
 type SubmitResponse struct {
@@ -50,9 +55,9 @@ type SubmitResponse struct {
 }
 
 type stagedFile struct {
-	Path        string
-	MIME        string
-	Size        int64
+	Path         string
+	MIME         string
+	Size         int64
 	OriginalName string
 }
 
@@ -65,11 +70,11 @@ type uploadPlan struct {
 }
 
 type materializedUpload struct {
-	Seq         int
-	Filename    string
-	ByteSize    int64
-	SHA256      string
-	ContentType string
+	Seq          int
+	Filename     string
+	ByteSize     int64
+	SHA256       string
+	ContentType  string
 	OriginalName string
 }
 
@@ -79,12 +84,17 @@ type uploadRateBucket struct {
 	lastSeen time.Time
 }
 
-func NewService(db *sqlx.DB, cfg config.Config, storageSvc *storage.Service, limiter *limits.Manager) *Service {
+const perInvoiceUploadCap = 1
+
+var errInvoiceUploadCapExceeded = apierror.New(http.StatusConflict, "INVOICE_UPLOAD_CAP_EXCEEDED", "发票录入专区最多上传 1 个文件")
+
+func NewService(db *sqlx.DB, cfg config.Config, storageSvc *storage.Service, limiter *limits.Manager, cache invoiceCacheInvalidator) *Service {
 	return &Service{
 		db:      db,
 		cfg:     cfg,
 		storage: storageSvc,
 		limits:  limiter,
+		cache:   cache,
 	}
 }
 
@@ -115,7 +125,7 @@ func (s *Service) submit(c *gin.Context, invoiceNo string) (SubmitResponse, erro
 
 	// Verify invoice exists
 	var exists int
-	if err := s.db.GetContext(ctx, &exists, `SELECT COUNT(*) FROM invoices WHERE invoice_no = ?`, invoiceNo); err != nil {
+	if err := s.db.GetContext(ctx, &exists, `SELECT COUNT(*) FROM invoices WHERE invoice_no = ? AND csv_present = 1`, invoiceNo); err != nil {
 		metrics.Default.IncSQLiteErrors()
 		return SubmitResponse{}, apierror.Wrap(err, http.StatusInternalServerError, "INTERNAL", "查询发票失败")
 	}
@@ -238,8 +248,8 @@ func (s *Service) submit(c *gin.Context, invoiceNo string) (SubmitResponse, erro
 	if totalFiles == 0 {
 		return SubmitResponse{}, apierror.ErrNoStagedFiles
 	}
-	if totalFiles > s.cfg.Limits.PerKindMax {
-		return SubmitResponse{}, apierror.ErrUploadCapExceeded
+	if totalFiles > perInvoiceUploadCap {
+		return SubmitResponse{}, errInvoiceUploadCapExceeded
 	}
 
 	invoiceDir, err := s.storage.InvoiceDir(invoiceNo)
@@ -248,6 +258,15 @@ func (s *Service) submit(c *gin.Context, invoiceNo string) (SubmitResponse, erro
 	}
 	if err := os.MkdirAll(invoiceDir, 0o700); err != nil {
 		return SubmitResponse{}, apierror.Wrap(err, http.StatusInternalServerError, "INTERNAL", "创建发票目录失败")
+	}
+
+	var existingCount int
+	if err := s.db.GetContext(ctx, &existingCount, `SELECT COUNT(*) FROM invoice_uploads WHERE invoice_no = ?`, invoiceNo); err != nil {
+		metrics.Default.IncSQLiteErrors()
+		return SubmitResponse{}, apierror.Wrap(err, http.StatusInternalServerError, "INTERNAL", "查询上传数量失败")
+	}
+	if existingCount+totalFiles > perInvoiceUploadCap {
+		return SubmitResponse{}, errInvoiceUploadCapExceeded
 	}
 
 	// Get max seq
@@ -296,11 +315,11 @@ func (s *Service) submit(c *gin.Context, invoiceNo string) (SubmitResponse, erro
 			}
 			createdPaths = append(createdPaths, finalPath)
 			materialized = append(materialized, materializedUpload{
-				Seq:         plan.Seq,
-				Filename:    plan.Filename,
-				ByteSize:    size,
-				SHA256:      sha,
-				ContentType: "application/pdf",
+				Seq:          plan.Seq,
+				Filename:     plan.Filename,
+				ByteSize:     size,
+				SHA256:       sha,
+				ContentType:  "application/pdf",
 				OriginalName: plan.Source.OriginalName,
 			})
 		} else {
@@ -311,11 +330,11 @@ func (s *Service) submit(c *gin.Context, invoiceNo string) (SubmitResponse, erro
 			}
 			createdPaths = append(createdPaths, finalPath)
 			materialized = append(materialized, materializedUpload{
-				Seq:         plan.Seq,
-				Filename:    plan.Filename,
-				ByteSize:    size,
-				SHA256:      sha,
-				ContentType: "image/jpeg",
+				Seq:          plan.Seq,
+				Filename:     plan.Filename,
+				ByteSize:     size,
+				SHA256:       sha,
+				ContentType:  "image/jpeg",
 				OriginalName: plan.Source.OriginalName,
 			})
 		}
@@ -343,6 +362,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 		s.rollbackCreatedFiles(createdPaths)
 		return SubmitResponse{}, apierror.Wrap(err, http.StatusInternalServerError, "INTERNAL", "提交上传事务失败")
 	}
+	s.invalidateCache()
 
 	var uploadCount int
 	if err := s.db.GetContext(ctx, &uploadCount, `SELECT COUNT(*) FROM invoice_uploads WHERE invoice_no = ?`, invoiceNo); err != nil {
@@ -433,6 +453,7 @@ func (s *Service) deleteUpload(ctx context.Context, invoiceNo string, uploadID i
 		_ = renameAndSync(trashPath, fullPath)
 		return apierror.Wrap(err, http.StatusInternalServerError, "INTERNAL", "提交删除事务失败")
 	}
+	s.invalidateCache()
 
 	go os.Remove(trashPath)
 	return nil
@@ -482,10 +503,17 @@ func (s *Service) ResetInvoice(ctx context.Context, invoiceNo string) error {
 		}
 		return apierror.Wrap(err, http.StatusInternalServerError, "INTERNAL", "提交重置事务失败")
 	}
+	s.invalidateCache()
 	if dirMoved {
 		go os.RemoveAll(trashDir)
 	}
 	return nil
+}
+
+func (s *Service) invalidateCache() {
+	if s.cache != nil {
+		s.cache.InvalidateCache()
+	}
 }
 
 func (s *Service) materializeJPEG(ctx context.Context, file stagedFile, dstPath string) (string, int64, string, error) {

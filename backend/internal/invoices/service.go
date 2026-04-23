@@ -25,12 +25,25 @@ type Service struct {
 }
 
 type serviceCache struct {
-	search map[string]cachedSearch
+	search   map[string]cachedSearch
+	progress cachedProgress
+}
+
+type cachedProgress struct {
+	value     []YearProgress
+	expiresAt time.Time
 }
 
 type cachedSearch struct {
 	value     []SearchItem
 	expiresAt time.Time
+}
+
+type YearProgress struct {
+	Year     int     `db:"year" json:"year"`
+	Total    int     `db:"total" json:"total"`
+	Uploaded int     `db:"uploaded" json:"uploaded"`
+	Percent  float64 `json:"percent"`
 }
 
 type SearchItem struct {
@@ -96,12 +109,12 @@ type searchRow struct {
 }
 
 type adminListRow struct {
-	InvoiceNo      string         `db:"invoice_no"`
-	Customer       string         `db:"customer"`
-	Seller         string         `db:"seller"`
-	InvoiceDate    string         `db:"invoice_date"`
-	UploadCount    int            `db:"upload_count"`
-	OperatorsRaw   sql.NullString `db:"operators"`
+	InvoiceNo       string         `db:"invoice_no"`
+	Customer        string         `db:"customer"`
+	Seller          string         `db:"seller"`
+	InvoiceDate     string         `db:"invoice_date"`
+	UploadCount     int            `db:"upload_count"`
+	OperatorsRaw    sql.NullString `db:"operators"`
 	LastUploadAtRaw sql.NullString `db:"last_upload_at"`
 }
 
@@ -116,6 +129,14 @@ func NewService(db *sqlx.DB, storageSvc *storage.Service) *Service {
 }
 
 func (s *Service) Search(ctx context.Context, q string, limit int) ([]SearchItem, error) {
+	return s.search(ctx, q, limit, false)
+}
+
+func (s *Service) SearchActive(ctx context.Context, q string, limit int) ([]SearchItem, error) {
+	return s.search(ctx, q, limit, true)
+}
+
+func (s *Service) search(ctx context.Context, q string, limit int, activeOnly bool) ([]SearchItem, error) {
 	q = strings.TrimSpace(q)
 	if len([]rune(q)) < 2 {
 		return nil, apierror.ErrBadRequest
@@ -126,7 +147,11 @@ func (s *Service) Search(ctx context.Context, q string, limit int) ([]SearchItem
 	if limit > 50 {
 		limit = 50
 	}
-	cacheKey := fmt.Sprintf("inv:%s:%d", strings.ToUpper(q), limit)
+	scope := "all"
+	if activeOnly {
+		scope = "active"
+	}
+	cacheKey := fmt.Sprintf("inv:%s:%s:%d", scope, strings.ToUpper(q), limit)
 	if cached, ok := s.cachedSearch(cacheKey); ok {
 		return cached, nil
 	}
@@ -140,6 +165,13 @@ SELECT
   COALESCE((SELECT COUNT(*) FROM invoice_uploads u WHERE u.invoice_no = i.invoice_no), 0) AS upload_count
 FROM invoices i
 WHERE i.invoice_no LIKE '%' || ? || '%' COLLATE NOCASE
+`
+	if activeOnly {
+		query += `
+  AND i.csv_present = 1
+`
+	}
+	query += `
 ORDER BY i.invoice_no ASC
 LIMIT ?`
 	if err := s.db.SelectContext(ctx, &rows, query, q, limit); err != nil {
@@ -161,7 +193,59 @@ LIMIT ?`
 	return items, nil
 }
 
+func (s *Service) Progress(ctx context.Context) ([]YearProgress, error) {
+	s.cacheMu.Lock()
+	if time.Now().Before(s.cache.progress.expiresAt) && s.cache.progress.value != nil {
+		out := make([]YearProgress, len(s.cache.progress.value))
+		copy(out, s.cache.progress.value)
+		s.cacheMu.Unlock()
+		return out, nil
+	}
+	s.cacheMu.Unlock()
+
+	var rows []YearProgress
+	query := `
+SELECT
+  CAST(SUBSTR(i.invoice_date, 1, 4) AS INTEGER) AS year,
+  COUNT(*) AS total,
+  SUM(
+    CASE WHEN EXISTS (
+      SELECT 1 FROM invoice_uploads u WHERE u.invoice_no = i.invoice_no
+    ) THEN 1 ELSE 0 END
+  ) AS uploaded
+FROM invoices i
+WHERE i.csv_present = 1
+GROUP BY SUBSTR(i.invoice_date, 1, 4)
+ORDER BY year DESC`
+	if err := s.db.SelectContext(ctx, &rows, query); err != nil {
+		metrics.Default.IncSQLiteErrors()
+		return nil, fmt.Errorf("invoice progress: %w", err)
+	}
+
+	for i := range rows {
+		if rows[i].Total > 0 {
+			rows[i].Percent = float64(rows[i].Uploaded) / float64(rows[i].Total)
+		}
+	}
+
+	s.cacheMu.Lock()
+	out := make([]YearProgress, len(rows))
+	copy(out, rows)
+	s.cache.progress = cachedProgress{value: out, expiresAt: time.Now().Add(5 * time.Second)}
+	s.cacheMu.Unlock()
+
+	return rows, nil
+}
+
 func (s *Service) Detail(ctx context.Context, invoiceNo string) (Detail, error) {
+	return s.detail(ctx, invoiceNo, false)
+}
+
+func (s *Service) DetailActive(ctx context.Context, invoiceNo string) (Detail, error) {
+	return s.detail(ctx, invoiceNo, true)
+}
+
+func (s *Service) detail(ctx context.Context, invoiceNo string, activeOnly bool) (Detail, error) {
 	invoiceNo = strings.TrimSpace(invoiceNo)
 	if invoiceNo == "" || storage.ValidatePathSegment(invoiceNo) != nil {
 		return Detail{}, ErrInvoiceNotFound
@@ -173,7 +257,11 @@ func (s *Service) Detail(ctx context.Context, invoiceNo string) (Detail, error) 
 		Seller      string `db:"seller"`
 		InvoiceDate string `db:"invoice_date"`
 	}
-	if err := s.db.GetContext(ctx, &invoice, `SELECT invoice_no, customer, seller, invoice_date FROM invoices WHERE invoice_no = ?`, invoiceNo); err != nil {
+	query := `SELECT invoice_no, customer, seller, invoice_date FROM invoices WHERE invoice_no = ?`
+	if activeOnly {
+		query += ` AND csv_present = 1`
+	}
+	if err := s.db.GetContext(ctx, &invoice, query, invoiceNo); err != nil {
 		if err == sql.ErrNoRows {
 			return Detail{}, ErrInvoiceNotFound
 		}
@@ -310,6 +398,13 @@ ORDER BY i.invoice_no ASC`
 		})
 	}
 	return items, nil
+}
+
+func (s *Service) InvalidateCache() {
+	s.cacheMu.Lock()
+	defer s.cacheMu.Unlock()
+	s.cache.search = make(map[string]cachedSearch)
+	s.cache.progress = cachedProgress{}
 }
 
 func buildAdminWhere(query string, onlyUploaded bool) (string, []any) {

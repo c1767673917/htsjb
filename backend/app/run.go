@@ -89,7 +89,8 @@ func serve(args []string) error {
 		}
 	}
 
-	invoiceImporter := invoiceingest.New(conn)
+	invoiceSvc := invoices.NewService(conn, storageSvc)
+	invoiceImporter := invoiceingest.New(conn, invoiceSvc)
 	needsInvoiceImport, err := invoiceImporter.NeedsImport(context.Background())
 	if err != nil {
 		return fmt.Errorf("check invoice import state: %w", err)
@@ -108,8 +109,7 @@ func serve(args []string) error {
 	orderSvc := orders.NewService(conn, storageSvc)
 	pdfSvc := pdfmerge.New(limiter)
 	uploadSvc := uploads.NewService(conn, cfg, orderSvc, storageSvc, pdfSvc, limiter)
-	invoiceSvc := invoices.NewService(conn, storageSvc)
-	invoiceUploadSvc := invoiceuploads.NewService(conn, cfg, storageSvc, limiter)
+	invoiceUploadSvc := invoiceuploads.NewService(conn, cfg, storageSvc, limiter, invoiceSvc)
 	adminSvc, err := admin.NewService(conn, cfg, orderSvc, storageSvc, uploadSvc, invoiceSvc, invoiceUploadSvc, limiter)
 	if err != nil {
 		return err
@@ -208,13 +208,14 @@ func importInvoiceCSV(args []string) error {
 		return err
 	}
 
-	cfg, conn, _, _, _, err := bootstrap(*configPath, config.LoadOptions{AllowUnsafeAdminPassword: true})
+	cfg, conn, storageSvc, _, _, err := bootstrap(*configPath, config.LoadOptions{AllowUnsafeAdminPassword: true})
 	if err != nil {
 		return err
 	}
 	defer conn.Close()
 
-	importer := invoiceingest.New(conn)
+	invoiceSvc := invoices.NewService(conn, storageSvc)
+	importer := invoiceingest.New(conn, invoiceSvc)
 
 	if *dryRun {
 		stats, err := importer.ValidateCSV(context.Background(), cfg.InvoiceCSVPath, *errorReport)

@@ -438,6 +438,13 @@ export const adminApi = {
 
 // === Invoice Types ===
 
+export interface InvoiceYearProgress {
+  year: number;
+  total: number;
+  uploaded: number;
+  percent: number;
+}
+
 export interface InvoiceSearchItem {
   invoiceNo: string;
   customer: string;
@@ -494,6 +501,9 @@ export interface InvoiceAdminList {
 // === Invoice API (public, no auth) ===
 
 export const invoiceApi = {
+  progress(signal?: AbortSignal) {
+    return request<InvoiceYearProgress[]>('/api/invoices/progress', { signal });
+  },
   async search(q: string, limit = 20, signal?: AbortSignal) {
     const res = await request<{ items: InvoiceSearchItem[] }>('/api/invoices/search', {
       query: { q, limit },

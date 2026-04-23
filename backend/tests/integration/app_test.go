@@ -26,6 +26,8 @@ import (
 	"product-collection-form/backend/internal/db"
 	"product-collection-form/backend/internal/httpapi"
 	"product-collection-form/backend/internal/httpapi/limits"
+	"product-collection-form/backend/internal/invoices"
+	"product-collection-form/backend/internal/invoiceuploads"
 	"product-collection-form/backend/internal/orders"
 	"product-collection-form/backend/internal/storage"
 	"product-collection-form/backend/internal/uploads"
@@ -197,12 +199,127 @@ func TestPostCommitPDFFailureAndRebuildRecovery(t *testing.T) {
 	}
 }
 
+func TestInvoiceProgressInvalidatesAfterUploadAndDelete(t *testing.T) {
+	t.Parallel()
+
+	app := newIntegrationApp(t, integrationPDFBuilder{})
+
+	progressReq := httptest.NewRequest(http.MethodGet, "/api/invoices/progress", nil)
+	progressRec := httptest.NewRecorder()
+	app.router.ServeHTTP(progressRec, progressReq)
+	if progressRec.Code != http.StatusOK {
+		t.Fatalf("expected initial invoice progress 200, got %d", progressRec.Code)
+	}
+	if !bytes.Contains(progressRec.Body.Bytes(), []byte(`"uploaded":0`)) {
+		t.Fatalf("expected initial uploaded count 0, got %s", progressRec.Body.String())
+	}
+
+	uploadReq := multipartRequest(t, http.MethodPost, "/api/invoices/INV-001/uploads", map[string][][]byte{
+		"invoice_photo[]": {jpegBytes(t, color.RGBA{R: 9, A: 255})},
+	})
+	uploadRec := httptest.NewRecorder()
+	app.router.ServeHTTP(uploadRec, uploadReq)
+	if uploadRec.Code != http.StatusOK {
+		t.Fatalf("expected invoice upload 200, got %d", uploadRec.Code)
+	}
+
+	progressRec = httptest.NewRecorder()
+	app.router.ServeHTTP(progressRec, progressReq)
+	if progressRec.Code != http.StatusOK {
+		t.Fatalf("expected post-upload invoice progress 200, got %d", progressRec.Code)
+	}
+	if !bytes.Contains(progressRec.Body.Bytes(), []byte(`"uploaded":1`)) {
+		t.Fatalf("expected uploaded count 1 after upload, got %s", progressRec.Body.String())
+	}
+
+	detailReq := httptest.NewRequest(http.MethodGet, "/api/invoices/INV-001", nil)
+	detailRec := httptest.NewRecorder()
+	app.router.ServeHTTP(detailRec, detailReq)
+	if detailRec.Code != http.StatusOK {
+		t.Fatalf("expected invoice detail 200, got %d", detailRec.Code)
+	}
+	var detail struct {
+		Uploads []struct {
+			ID int64 `json:"id"`
+		} `json:"uploads"`
+	}
+	if err := json.Unmarshal(detailRec.Body.Bytes(), &detail); err != nil {
+		t.Fatalf("decode invoice detail: %v", err)
+	}
+	if len(detail.Uploads) != 1 {
+		t.Fatalf("expected 1 invoice upload, got %d", len(detail.Uploads))
+	}
+
+	deleteReq := httptest.NewRequest(http.MethodDelete, fmt.Sprintf("/api/invoices/INV-001/uploads/%d", detail.Uploads[0].ID), nil)
+	deleteRec := httptest.NewRecorder()
+	app.router.ServeHTTP(deleteRec, deleteReq)
+	if deleteRec.Code != http.StatusOK {
+		t.Fatalf("expected invoice delete 200, got %d", deleteRec.Code)
+	}
+
+	progressRec = httptest.NewRecorder()
+	app.router.ServeHTTP(progressRec, progressReq)
+	if progressRec.Code != http.StatusOK {
+		t.Fatalf("expected post-delete invoice progress 200, got %d", progressRec.Code)
+	}
+	if !bytes.Contains(progressRec.Body.Bytes(), []byte(`"uploaded":0`)) {
+		t.Fatalf("expected uploaded count 0 after delete, got %s", progressRec.Body.String())
+	}
+}
+
+func TestPublicInvoiceEndpointsIgnoreInactiveInvoices(t *testing.T) {
+	t.Parallel()
+
+	app := newIntegrationApp(t, integrationPDFBuilder{})
+
+	searchReq := httptest.NewRequest(http.MethodGet, "/api/invoices/search?q=INV&limit=20", nil)
+	searchRec := httptest.NewRecorder()
+	app.router.ServeHTTP(searchRec, searchReq)
+	if searchRec.Code != http.StatusOK {
+		t.Fatalf("expected invoice search 200, got %d", searchRec.Code)
+	}
+	if bytes.Contains(searchRec.Body.Bytes(), []byte(`INV-OLD`)) {
+		t.Fatalf("expected inactive invoice hidden from public search, got %s", searchRec.Body.String())
+	}
+	if !bytes.Contains(searchRec.Body.Bytes(), []byte(`INV-001`)) {
+		t.Fatalf("expected active invoice in public search, got %s", searchRec.Body.String())
+	}
+
+	detailReq := httptest.NewRequest(http.MethodGet, "/api/invoices/INV-OLD", nil)
+	detailRec := httptest.NewRecorder()
+	app.router.ServeHTTP(detailRec, detailReq)
+	if detailRec.Code != http.StatusNotFound {
+		t.Fatalf("expected inactive invoice detail 404, got %d", detailRec.Code)
+	}
+
+	uploadReq := multipartRequest(t, http.MethodPost, "/api/invoices/INV-OLD/uploads", map[string][][]byte{
+		"invoice_photo[]": {jpegBytes(t, color.RGBA{B: 9, A: 255})},
+	})
+	uploadRec := httptest.NewRecorder()
+	app.router.ServeHTTP(uploadRec, uploadReq)
+	if uploadRec.Code != http.StatusNotFound {
+		t.Fatalf("expected inactive invoice upload 404, got %d", uploadRec.Code)
+	}
+
+	progressReq := httptest.NewRequest(http.MethodGet, "/api/invoices/progress", nil)
+	progressRec := httptest.NewRecorder()
+	app.router.ServeHTTP(progressRec, progressReq)
+	if progressRec.Code != http.StatusOK {
+		t.Fatalf("expected invoice progress 200, got %d", progressRec.Code)
+	}
+	if !bytes.Contains(progressRec.Body.Bytes(), []byte(`"total":1`)) {
+		t.Fatalf("expected invoice progress total 1, got %s", progressRec.Body.String())
+	}
+}
+
 type integrationApp struct {
-	router  *gin.Engine
-	db      *sqlx.DB
-	storage *storage.Service
-	orders  *orders.Service
-	uploads *uploads.Service
+	router         *gin.Engine
+	db             *sqlx.DB
+	storage        *storage.Service
+	orders         *orders.Service
+	uploads        *uploads.Service
+	invoices       *invoices.Service
+	invoiceUploads *invoiceuploads.Service
 }
 
 func newIntegrationApp(t *testing.T, pdfBuilder integrationPDFBuilder) integrationApp {
@@ -227,17 +344,28 @@ func newIntegrationApp(t *testing.T, pdfBuilder integrationPDFBuilder) integrati
 	}
 	t.Cleanup(func() { _ = conn.Close() })
 	seedIntegrationOrder(t, conn)
+	seedIntegrationInvoices(t, conn)
 
 	orderSvc := orders.NewService(conn, storageSvc)
+	invoiceSvc := invoices.NewService(conn, storageSvc)
 	limiter := limits.New(cfg.Concurrency)
 	uploadSvc := uploads.NewService(conn, cfg, orderSvc, storageSvc, pdfBuilder, limiter)
-	adminSvc, err := admin.NewService(conn, cfg, orderSvc, storageSvc, uploadSvc, nil, nil, limiter)
+	invoiceUploadSvc := invoiceuploads.NewService(conn, cfg, storageSvc, limiter, invoiceSvc)
+	adminSvc, err := admin.NewService(conn, cfg, orderSvc, storageSvc, uploadSvc, invoiceSvc, invoiceUploadSvc, limiter)
 	if err != nil {
 		t.Fatalf("create admin service: %v", err)
 	}
 	distFS := fstest.MapFS{"index.html": &fstest.MapFile{Data: []byte("<p>placeholder</p>")}}
-	router := httpapi.New(conn, orderSvc, storageSvc, uploadSvc, adminSvc, nil, nil, distFS).Engine()
-	return integrationApp{router: router, db: conn, storage: storageSvc, orders: orderSvc, uploads: uploadSvc}
+	router := httpapi.New(conn, orderSvc, storageSvc, uploadSvc, adminSvc, invoiceSvc, invoiceUploadSvc, distFS).Engine()
+	return integrationApp{
+		router:         router,
+		db:             conn,
+		storage:        storageSvc,
+		orders:         orderSvc,
+		uploads:        uploadSvc,
+		invoices:       invoiceSvc,
+		invoiceUploads: invoiceUploadSvc,
+	}
 }
 
 func seedIntegrationOrder(t *testing.T, conn *sqlx.DB) {
@@ -258,6 +386,23 @@ INSERT INTO uploads (year, order_no, kind, seq, filename, byte_size, sha256) VAL
 	(2021, 'RX2101-22926', '发货单', 1, 'RX2101-22926-哈尔滨金诺食品有限公司-发货单-01.jpg', 1, 'c');`)
 	if err != nil {
 		t.Fatalf("seed integration order: %v", err)
+	}
+}
+
+func seedIntegrationInvoices(t *testing.T, conn *sqlx.DB) {
+	t.Helper()
+	_, err := conn.Exec(`
+INSERT INTO invoices (invoice_no, customer, customer_clean, seller, invoice_date, csv_present) VALUES
+	('INV-001', '发票客户', '发票客户', '销方 A', '2026-01-05', 1),
+	('INV-OLD', '旧发票客户', '旧发票客户', '销方 B', '2026-01-06', 0);
+INSERT INTO invoice_lines (
+	invoice_no, year, invoice_date, seller, customer, product, quantity, amount,
+	tax_amount, total_with_tax, tax_rate, source_hash, source_line
+) VALUES
+	('INV-001', 2026, '2026-01-05', '销方 A', '发票客户', '产品一', 1, 100, 13, 113, '13%', 'invoice-seed-1', 1),
+	('INV-OLD', 2026, '2026-01-06', '销方 B', '旧发票客户', '产品二', 2, 200, 26, 226, '13%', 'invoice-seed-2', 2);`)
+	if err != nil {
+		t.Fatalf("seed integration invoices: %v", err)
 	}
 }
 

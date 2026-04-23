@@ -18,7 +18,12 @@ import (
 )
 
 type Importer struct {
-	db *sqlx.DB
+	db    *sqlx.DB
+	cache invoiceCacheInvalidator
+}
+
+type invoiceCacheInvalidator interface {
+	InvalidateCache()
 }
 
 type Stats struct {
@@ -34,8 +39,8 @@ type ValidationStats struct {
 	ReportWritten bool `json:"reportWritten"`
 }
 
-func New(db *sqlx.DB) *Importer {
-	return &Importer{db: db}
+func New(db *sqlx.DB, cache invoiceCacheInvalidator) *Importer {
+	return &Importer{db: db, cache: cache}
 }
 
 func (i *Importer) NeedsImport(ctx context.Context) (bool, error) {
@@ -210,25 +215,28 @@ INSERT OR IGNORE INTO invoice_lines (
 		return Stats{}, fmt.Errorf("commit import: %w", err)
 	}
 	committed = true
+	if i.cache != nil {
+		i.cache.InvalidateCache()
+	}
 
 	stats.InvoicesTouched = len(seenInvoices)
 	return stats, nil
 }
 
 type normalizedRow struct {
-	InvoiceNo    string
-	Year         int
-	InvoiceDate  string
-	Seller       string
-	Customer     string
+	InvoiceNo     string
+	Year          int
+	InvoiceDate   string
+	Seller        string
+	Customer      string
 	CustomerClean string
-	Product      string
-	Quantity     float64
-	Amount       float64
-	TaxAmount    float64
-	TotalWithTax float64
-	TaxRate      string
-	SourceHash   string
+	Product       string
+	Quantity      float64
+	Amount        float64
+	TaxAmount     float64
+	TotalWithTax  float64
+	TaxRate       string
+	SourceHash    string
 }
 
 func normalizeRecord(record []string, lineNo int) (normalizedRow, error) {
@@ -291,19 +299,19 @@ func normalizeRecord(record []string, lineNo int) (normalizedRow, error) {
 	sum := sha256.Sum256([]byte(hashInput))
 
 	return normalizedRow{
-		InvoiceNo:    invoiceNo,
-		Year:         year,
-		InvoiceDate:  invoiceDate,
-		Seller:       firstNonEmpty(seller, "未知销方"),
-		Customer:     firstNonEmpty(customer, "未知客户"),
+		InvoiceNo:     invoiceNo,
+		Year:          year,
+		InvoiceDate:   invoiceDate,
+		Seller:        firstNonEmpty(seller, "未知销方"),
+		Customer:      firstNonEmpty(customer, "未知客户"),
 		CustomerClean: customerClean,
-		Product:      product,
-		Quantity:     quantity,
-		Amount:       amount,
-		TaxAmount:    taxAmount,
-		TotalWithTax: totalWithTax,
-		TaxRate:      taxRate,
-		SourceHash:   hex.EncodeToString(sum[:]),
+		Product:       product,
+		Quantity:      quantity,
+		Amount:        amount,
+		TaxAmount:     taxAmount,
+		TotalWithTax:  totalWithTax,
+		TaxRate:       taxRate,
+		SourceHash:    hex.EncodeToString(sum[:]),
 	}, nil
 }
 

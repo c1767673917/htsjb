@@ -64,6 +64,7 @@ func (r *Router) Engine() *gin.Engine {
 	yearGroup.DELETE("/orders/:orderNo/uploads/:id", r.uploads.HandleUserDelete)
 
 	invGroup := api.Group("/invoices")
+	invGroup.GET("/progress", r.handleInvoiceProgress)
 	invGroup.GET("/search", r.handleInvoiceSearch)
 	invGroup.GET("/:invoiceNo", r.handleInvoiceDetail)
 	invGroup.POST("/:invoiceNo/uploads", r.invoiceUploads.HandleSubmit)
@@ -176,13 +177,22 @@ func (r *Router) handleFile(c *gin.Context) {
 	c.File(fullPath)
 }
 
+func (r *Router) handleInvoiceProgress(c *gin.Context) {
+	progress, err := r.invoices.Progress(c.Request.Context())
+	if err != nil {
+		writeError(c, apierror.Wrap(err, http.StatusInternalServerError, "INTERNAL", "读取发票进度失败"))
+		return
+	}
+	c.JSON(http.StatusOK, progress)
+}
+
 func (r *Router) handleInvoiceSearch(c *gin.Context) {
 	limit, err := strconv.Atoi(c.DefaultQuery("limit", "20"))
 	if err != nil {
 		writeError(c, apierror.Wrap(err, http.StatusBadRequest, "BAD_REQUEST", "limit 参数无效"))
 		return
 	}
-	items, err := r.invoices.Search(c.Request.Context(), c.Query("q"), limit)
+	items, err := r.invoices.SearchActive(c.Request.Context(), c.Query("q"), limit)
 	if err != nil {
 		writeError(c, err)
 		return
@@ -191,7 +201,7 @@ func (r *Router) handleInvoiceSearch(c *gin.Context) {
 }
 
 func (r *Router) handleInvoiceDetail(c *gin.Context) {
-	detail, err := r.invoices.Detail(c.Request.Context(), c.Param("invoiceNo"))
+	detail, err := r.invoices.DetailActive(c.Request.Context(), c.Param("invoiceNo"))
 	if err != nil {
 		writeError(c, err)
 		return
