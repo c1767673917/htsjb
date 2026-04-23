@@ -8,6 +8,8 @@ import type { InvoiceUploadFile } from '@/lib/api';
 import type { StagedFile } from '@/stores/invoice';
 import { PER_INVOICE_CAP } from '@/stores/invoice';
 
+const isMobile = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+
 const props = defineProps<{
   serverFiles: InvoiceUploadFile[];
   stagedFiles: StagedFile[];
@@ -201,7 +203,8 @@ function humanSize(bytes: number): string {
       v-if="!readOnly"
       ref="inputRef"
       type="file"
-      accept="image/*,.pdf,application/pdf"
+      :accept="isMobile ? 'image/*' : 'image/*,.pdf,application/pdf'"
+      :capture="isMobile ? 'environment' : undefined"
       class="sr-only"
       @change="onChange"
     />
