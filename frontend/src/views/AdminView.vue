@@ -212,6 +212,32 @@ function invoiceCsvExportHref(): string {
   });
 }
 
+const showInvoiceExportDialog = ref(false);
+const invoiceExportOperator = ref('');
+const invoiceExportUploadFrom = ref('');
+const invoiceExportUploadTo = ref('');
+
+function openInvoiceExportDialog() {
+  invoiceExportOperator.value = '';
+  invoiceExportUploadFrom.value = '';
+  invoiceExportUploadTo.value = '';
+  showInvoiceExportDialog.value = true;
+}
+
+function closeInvoiceExportDialog() {
+  showInvoiceExportDialog.value = false;
+}
+
+function invoiceZipExportHref(): string {
+  return adminApi.invoiceZipExportUrl({
+    q: invoiceFilters.value.q || undefined,
+    onlyUploaded: invoiceFilters.value.onlyUploaded || undefined,
+    operator: invoiceExportOperator.value || undefined,
+    uploadFrom: invoiceExportUploadFrom.value || undefined,
+    uploadTo: invoiceExportUploadTo.value || undefined,
+  });
+}
+
 async function onDeletePhoto(photo: UploadedPhoto) {
   if (!currentRow.value) return;
   if (!window.confirm(`确定删除该照片？\n文件：${photo.filename}`)) return;
@@ -360,6 +386,7 @@ function formatAmount(n: number): string {
         </template>
         <template v-else>
           <a class="btn btn-ghost tap" :href="invoiceCsvExportHref()" download>导出 CSV</a>
+          <button type="button" class="btn btn-ghost tap" @click="openInvoiceExportDialog">导出文件 zip</button>
         </template>
         <button type="button" class="btn btn-ghost tap" @click="onLogout">退出</button>
       </div>
@@ -727,6 +754,30 @@ function formatAmount(n: number): string {
           <div style="display:flex; gap:var(--space-2); justify-content:flex-end; margin-top:var(--space-3)">
             <button type="button" class="btn btn-ghost tap" @click="closeExportDialog">取消</button>
             <a class="btn btn-primary tap" :href="yearExportHref()" download @click="closeExportDialog">开始导出</a>
+          </div>
+        </div>
+      </div>
+    </teleport>
+
+    <teleport to="body">
+      <div v-if="showInvoiceExportDialog" class="export-overlay" @click.self="closeInvoiceExportDialog">
+        <div class="export-dialog">
+          <h3 style="margin:0 0 var(--space-3)">导出发票文件 ZIP</h3>
+          <label class="export-field">
+            <span>录入人</span>
+            <input class="input" type="text" v-model="invoiceExportOperator" placeholder="留空则不筛选" />
+          </label>
+          <label class="export-field">
+            <span>最后上传时间（起）</span>
+            <input class="input" type="date" v-model="invoiceExportUploadFrom" />
+          </label>
+          <label class="export-field">
+            <span>最后上传时间（止）</span>
+            <input class="input" type="date" v-model="invoiceExportUploadTo" />
+          </label>
+          <div style="display:flex; gap:var(--space-2); justify-content:flex-end; margin-top:var(--space-3)">
+            <button type="button" class="btn btn-ghost tap" @click="closeInvoiceExportDialog">取消</button>
+            <a class="btn btn-primary tap" :href="invoiceZipExportHref()" download @click="closeInvoiceExportDialog">开始导出</a>
           </div>
         </div>
       </div>

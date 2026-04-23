@@ -100,6 +100,7 @@ func (s *Service) RegisterRoutes(group *gin.RouterGroup) {
 
 	authed.GET("/invoices", s.handleInvoiceList)
 	authed.GET("/invoices/export.csv", s.handleInvoiceCSVExport)
+	authed.GET("/invoices/export.zip", s.handleInvoiceZipExport)
 	authed.GET("/invoices/:invoiceNo", s.handleInvoiceDetail)
 
 	mutating := authed.Group("")
@@ -635,6 +636,130 @@ func (s *Service) handleInvoiceCSVExport(c *gin.Context) {
 		})
 	}
 	w.Flush()
+}
+
+func (s *Service) handleInvoiceZipExport(c *gin.Context) {
+	releaseExport, err := s.acquireYearExportGate(c.Request.Context())
+	if err != nil {
+		writeError(c, err)
+		return
+	}
+	defer releaseExport()
+
+	onlyUploaded := c.Query("onlyUploaded") == "true"
+	searchQuery := strings.TrimSpace(c.Query("q"))
+	operator := strings.TrimSpace(c.Query("operator"))
+	uploadFrom := strings.TrimSpace(c.Query("uploadFrom"))
+	uploadTo := strings.TrimSpace(c.Query("uploadTo"))
+
+	files, err := s.invoiceExportFiles(c.Request.Context(), searchQuery, onlyUploaded, operator, uploadFrom, uploadTo)
+	if err != nil {
+		writeError(c, apierror.Wrap(err, http.StatusInternalServerError, "INTERNAL", "读取导出发票文件失败"))
+		return
+	}
+
+	c.Header("Content-Type", "application/zip")
+	c.Header("Content-Disposition", `attachment; filename="发票文件.zip"`)
+	c.Header("X-Content-Type-Options", "nosniff")
+	zw := zip.NewWriter(c.Writer)
+	var exportErrors []string
+
+	prevInvoice := ""
+	var releaseInvoice func()
+	for _, f := range files {
+		if f.InvoiceNo != prevInvoice {
+			if releaseInvoice != nil {
+				releaseInvoice()
+			}
+			var err error
+			releaseInvoice, err = s.storage.AcquireInvoice(c.Request.Context(), f.InvoiceNo)
+			if err != nil {
+				exportErrors = append(exportErrors, fmt.Sprintf("%s: 获取发票锁失败: %v", f.InvoiceNo, err))
+				releaseInvoice = nil
+				prevInvoice = f.InvoiceNo
+				continue
+			}
+			prevInvoice = f.InvoiceNo
+		}
+		if releaseInvoice == nil {
+			continue
+		}
+		fullPath, err := s.storage.ValidateInvoiceFilePath(f.InvoiceNo, f.Filename)
+		if err != nil {
+			exportErrors = append(exportErrors, fmt.Sprintf("%s: 文件路径非法: %v", f.InvoiceNo, err))
+			continue
+		}
+		if err := writeZipEntry(c.Request.Context(), zw, filepath.Join(f.InvoiceNo, f.Filename), fullPath); err != nil {
+			if c.Request.Context().Err() != nil {
+				releaseInvoice()
+				slog.WarnContext(c.Request.Context(), "write invoice export cancelled", "invoice_no", f.InvoiceNo, "error", err)
+				_ = zw.Close()
+				return
+			}
+			exportErrors = append(exportErrors, fmt.Sprintf("%s: 写入文件失败 %s: %v", f.InvoiceNo, f.Filename, err))
+			slog.WarnContext(c.Request.Context(), "write invoice export file failed", "invoice_no", f.InvoiceNo, "filename", f.Filename, "error", err)
+		}
+	}
+	if releaseInvoice != nil {
+		releaseInvoice()
+	}
+
+	if len(exportErrors) > 0 {
+		if err := writeErrorsEntry(zw, exportErrors); err != nil {
+			slog.WarnContext(c.Request.Context(), "write invoice export errors.txt failed", "error", err)
+		}
+	}
+	if err := zw.Close(); err != nil {
+		slog.WarnContext(c.Request.Context(), "close invoice export zip failed", "error", err)
+	}
+	metrics.Default.IncZIPExports()
+}
+
+type invoiceExportFile struct {
+	InvoiceNo string `db:"invoice_no"`
+	Filename  string `db:"filename"`
+}
+
+func (s *Service) invoiceExportFiles(ctx context.Context, query string, onlyUploaded bool, operator, uploadFrom, uploadTo string) ([]invoiceExportFile, error) {
+	where := []string{"1=1"}
+	var args []any
+
+	query = strings.TrimSpace(query)
+	if r := []rune(query); len(r) > 64 {
+		query = string(r[:64])
+	}
+	if query != "" {
+		where = append(where, `(i.invoice_no LIKE '%' || ? || '%' COLLATE NOCASE OR i.customer LIKE '%' || ? || '%' COLLATE NOCASE OR i.seller LIKE '%' || ? || '%' COLLATE NOCASE)`)
+		args = append(args, query, query, query)
+	}
+
+	existsConds := []string{"ux.invoice_no = iu.invoice_no"}
+	if operator != "" {
+		existsConds = append(existsConds, "ux.operator LIKE '%' || ? || '%' COLLATE NOCASE")
+		args = append(args, operator)
+	}
+	if uploadFrom != "" {
+		existsConds = append(existsConds, "ux.uploaded_at >= datetime(?, 'utc')")
+		args = append(args, uploadFrom)
+	}
+	if uploadTo != "" {
+		existsConds = append(existsConds, "ux.uploaded_at <= datetime(?, 'utc')")
+		args = append(args, uploadTo+" 23:59:59")
+	}
+	where = append(where, `EXISTS (SELECT 1 FROM invoice_uploads ux WHERE `+strings.Join(existsConds, " AND ")+`)`)
+
+	sqlStr := `
+SELECT iu.invoice_no, iu.filename
+FROM invoice_uploads iu
+JOIN invoices i ON i.invoice_no = iu.invoice_no
+WHERE ` + strings.Join(where, " AND ") + `
+ORDER BY iu.invoice_no ASC, iu.seq ASC`
+
+	var files []invoiceExportFile
+	if err := s.db.SelectContext(ctx, &files, sqlStr, args...); err != nil {
+		return nil, err
+	}
+	return files, nil
 }
 
 func (s *Service) resetOrder(ctx context.Context, year int, orderNo string) error {

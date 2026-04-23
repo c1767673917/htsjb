@@ -434,6 +434,22 @@ export const adminApi = {
     const qs = params.toString();
     return '/api/admin/invoices/export.csv' + (qs ? `?${qs}` : '');
   },
+  invoiceZipExportUrl(filters?: {
+    q?: string;
+    onlyUploaded?: boolean;
+    operator?: string;
+    uploadFrom?: string;
+    uploadTo?: string;
+  }) {
+    const params = new URLSearchParams();
+    if (filters?.q) params.set('q', filters.q);
+    if (filters?.onlyUploaded) params.set('onlyUploaded', 'true');
+    if (filters?.operator) params.set('operator', filters.operator);
+    if (filters?.uploadFrom) params.set('uploadFrom', filters.uploadFrom);
+    if (filters?.uploadTo) params.set('uploadTo', filters.uploadTo);
+    const qs = params.toString();
+    return '/api/admin/invoices/export.zip' + (qs ? `?${qs}` : '');
+  },
 };
 
 // === Invoice Types ===
