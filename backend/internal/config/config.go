@@ -81,8 +81,8 @@ func Default() Config {
 			AcquireTimeoutSeconds: 5,
 		},
 		DB: DBConfig{
-			MaxOpenConns:           8,
-			MaxIdleConns:           4,
+			MaxOpenConns:           1,
+			MaxIdleConns:           1,
 			ConnMaxLifetimeMinutes: 30,
 		},
 		Image: ImageConfig{

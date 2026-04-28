@@ -44,6 +44,8 @@ func Open(ctx context.Context, opts Options) (*sqlx.DB, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite: %w", err)
 	}
+	// Keep the production default at one connection to avoid the observed upload
+	// failure mode where concurrent SQLite writers leave requests stuck behind locks.
 	conn.SetMaxOpenConns(opts.Pool.MaxOpenConns)
 	conn.SetMaxIdleConns(opts.Pool.MaxIdleConns)
 	conn.SetConnMaxLifetime(time.Duration(opts.Pool.ConnMaxLifetimeMinutes) * time.Minute)
@@ -60,7 +62,7 @@ func applyConnPragmas(ctx context.Context, conn moderncsqlite.ExecQuerierContext
 		"PRAGMA journal_mode=WAL",
 		"PRAGMA synchronous=NORMAL",
 		"PRAGMA foreign_keys=ON",
-		"PRAGMA busy_timeout=5000",
+		"PRAGMA busy_timeout=15000",
 		"PRAGMA temp_store=MEMORY",
 	}
 	for _, query := range pragmas {

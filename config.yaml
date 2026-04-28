@@ -19,8 +19,8 @@ concurrency:
   max_image_decodes: 4
   acquire_timeout_seconds: 5
 db:
-  max_open_conns: 8
-  max_idle_conns: 4
+  max_open_conns: 1
+  max_idle_conns: 1
   conn_max_lifetime_minutes: 30
 image:
   pdf_order:
