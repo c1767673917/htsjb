@@ -69,7 +69,7 @@ func TestAdminExportsRebuildAndCSRF(t *testing.T) {
 		}
 	})
 
-	t.Run("year export only contains merged pdf and delivery", func(t *testing.T) {
+	t.Run("year export defaults to merged pdf and delivery", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/api/admin/2021/export.zip", nil)
 		req.AddCookie(cookie)
 		rec := httptest.NewRecorder()
@@ -85,6 +85,34 @@ func TestAdminExportsRebuildAndCSRF(t *testing.T) {
 		}
 		if diff := compareNames(names, want); diff != "" {
 			t.Fatalf("unexpected year export contents: %s", diff)
+		}
+	})
+
+	t.Run("year export can filter file types", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/api/admin/2021/export.zip?types=contract", nil)
+		req.AddCookie(cookie)
+		rec := httptest.NewRecorder()
+		env.router.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected export 200, got %d", rec.Code)
+		}
+		names := zipNames(t, rec.Body.Bytes())
+		sort.Strings(names)
+		want := []string{
+			"RX2101-22926/RX2101-22926-哈尔滨金诺食品有限公司-合同-01.jpg",
+		}
+		if diff := compareNames(names, want); diff != "" {
+			t.Fatalf("unexpected filtered year export contents: %s", diff)
+		}
+	})
+
+	t.Run("year export rejects invalid file type", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/api/admin/2021/export.zip?types=invoice", nil)
+		req.AddCookie(cookie)
+		rec := httptest.NewRecorder()
+		env.router.ServeHTTP(rec, req)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("expected export 400, got %d", rec.Code)
 		}
 	})
 

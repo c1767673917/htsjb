@@ -347,11 +347,22 @@ export const adminApi = {
   bundleZipUrl(year: number, orderNo: string) {
     return `/api/admin/${year}/orders/${encodeURIComponent(orderNo)}/bundle.zip`;
   },
-  yearExportUrl(year: number, filters?: { operator?: string; uploadFrom?: string; uploadTo?: string }) {
+  yearExportUrl(
+    year: number,
+    filters?: {
+      operator?: string;
+      uploadFrom?: string;
+      uploadTo?: string;
+      types?: Array<'contract' | 'pdf' | 'delivery'>;
+    },
+  ) {
     const params = new URLSearchParams();
     if (filters?.operator) params.set('operator', filters.operator);
     if (filters?.uploadFrom) params.set('uploadFrom', filters.uploadFrom);
     if (filters?.uploadTo) params.set('uploadTo', filters.uploadTo);
+    for (const type of filters?.types ?? []) {
+      params.append('types', type);
+    }
     const qs = params.toString();
     return `/api/admin/${year}/export.zip` + (qs ? `?${qs}` : '');
   },

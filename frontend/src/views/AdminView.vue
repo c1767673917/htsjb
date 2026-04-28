@@ -176,11 +176,24 @@ const showExportDialog = ref(false);
 const exportOperator = ref('');
 const exportUploadFrom = ref('');
 const exportUploadTo = ref('');
+const exportTypes = ref({
+  contract: false,
+  pdf: true,
+  delivery: true,
+});
+const exportTypeOptions = [
+  { key: 'contract', label: '合同' },
+  { key: 'pdf', label: 'PDF' },
+  { key: 'delivery', label: '发货单' },
+] as const;
+type YearExportType = (typeof exportTypeOptions)[number]['key'];
+const hasExportType = computed(() => Object.values(exportTypes.value).some(Boolean));
 
 function openExportDialog() {
   exportOperator.value = '';
   exportUploadFrom.value = '';
   exportUploadTo.value = '';
+  exportTypes.value = { contract: false, pdf: true, delivery: true };
   showExportDialog.value = true;
 }
 
@@ -193,7 +206,17 @@ function yearExportHref(): string {
     operator: exportOperator.value || undefined,
     uploadFrom: exportUploadFrom.value || undefined,
     uploadTo: exportUploadTo.value || undefined,
+    types: exportTypeOptions
+      .filter((option) => exportTypes.value[option.key])
+      .map((option) => option.key),
   });
+}
+
+function onExportTypeChange(type: YearExportType, e: Event) {
+  exportTypes.value = {
+    ...exportTypes.value,
+    [type]: (e.target as HTMLInputElement).checked,
+  };
 }
 
 function csvExportHref(): string {
@@ -751,9 +774,29 @@ function formatAmount(n: number): string {
             <span>最后上传时间（止）</span>
             <input class="input" type="date" v-model="exportUploadTo" />
           </label>
+          <fieldset class="export-field export-type-field">
+            <legend>文件类型</legend>
+            <label v-for="option in exportTypeOptions" :key="option.key" class="export-check">
+              <input
+                type="checkbox"
+                :checked="exportTypes[option.key]"
+                @change="onExportTypeChange(option.key, $event)"
+              />
+              {{ option.label }}
+            </label>
+          </fieldset>
+          <p v-if="!hasExportType" class="export-warning">至少选择一种文件类型</p>
           <div style="display:flex; gap:var(--space-2); justify-content:flex-end; margin-top:var(--space-3)">
             <button type="button" class="btn btn-ghost tap" @click="closeExportDialog">取消</button>
-            <a class="btn btn-primary tap" :href="yearExportHref()" download @click="closeExportDialog">开始导出</a>
+            <a
+              :class="['btn', 'btn-primary', 'tap', !hasExportType ? 'disabled' : '']"
+              :href="hasExportType ? yearExportHref() : undefined"
+              :aria-disabled="!hasExportType"
+              download
+              @click="hasExportType ? closeExportDialog() : $event.preventDefault()"
+            >
+              开始导出
+            </a>
           </div>
         </div>
       </div>
@@ -925,5 +968,29 @@ function formatAmount(n: number): string {
   gap: 4px;
   margin-bottom: var(--space-2);
   font-size: var(--font-sm);
+}
+.export-type-field {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  padding: var(--space-2);
+}
+.export-type-field legend {
+  padding: 0 4px;
+  color: var(--color-text-muted);
+}
+.export-check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 28px;
+}
+.export-warning {
+  margin: 0;
+  color: var(--color-danger);
+  font-size: var(--font-sm);
+}
+.btn.disabled {
+  opacity: 0.55;
+  pointer-events: none;
 }
 </style>

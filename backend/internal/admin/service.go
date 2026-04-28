@@ -63,7 +63,14 @@ type loginBucket struct {
 type yearExportOrder struct {
 	OrderNo       string
 	CustomerClean string
+	ContractFiles []string
 	DeliveryFiles []string
+}
+
+type yearExportTypes struct {
+	Contract bool
+	PDF      bool
+	Delivery bool
 }
 
 func NewService(db *sqlx.DB, cfg config.Config, orderSvc *orders.Service, storageSvc *storage.Service, uploadSvc *uploads.Service, invoiceSvc *invoices.Service, invoiceUploadSvc *invoiceuploads.Service, limiter *limits.Manager) (*Service, error) {
@@ -432,6 +439,11 @@ func (s *Service) handleYearExport(c *gin.Context) {
 	operator := strings.TrimSpace(c.Query("operator"))
 	uploadFrom := strings.TrimSpace(c.Query("uploadFrom"))
 	uploadTo := strings.TrimSpace(c.Query("uploadTo"))
+	exportTypes, err := parseYearExportTypes(c.QueryArray("types"))
+	if err != nil {
+		writeError(c, err)
+		return
+	}
 
 	exportOrders, err := s.yearExportOrders(c.Request.Context(), year, operator, uploadFrom, uploadTo)
 	if err != nil {
@@ -452,38 +464,33 @@ func (s *Service) handleYearExport(c *gin.Context) {
 			continue
 		}
 
-		pdfName := storage.MergedPDFName(order.OrderNo, order.CustomerClean)
-		pdfPath, err := s.storage.ValidateOrderFilePath(year, order.OrderNo, pdfName)
-		if err == nil {
-			if _, statErr := os.Stat(pdfPath); statErr == nil {
-				if err := writeZipEntry(c.Request.Context(), zw, filepath.Join(order.OrderNo, pdfName), pdfPath); err != nil {
-					if c.Request.Context().Err() != nil {
-						release()
-						slog.WarnContext(c.Request.Context(), "write year export pdf cancelled", "year", year, "order_no", order.OrderNo, "error", err)
-						_ = zw.Close()
-						return
+		if exportTypes.PDF {
+			pdfName := storage.MergedPDFName(order.OrderNo, order.CustomerClean)
+			pdfPath, err := s.storage.ValidateOrderFilePath(year, order.OrderNo, pdfName)
+			if err == nil {
+				if _, statErr := os.Stat(pdfPath); statErr == nil {
+					if err := writeZipEntry(c.Request.Context(), zw, filepath.Join(order.OrderNo, pdfName), pdfPath); err != nil {
+						if c.Request.Context().Err() != nil {
+							release()
+							slog.WarnContext(c.Request.Context(), "write year export pdf cancelled", "year", year, "order_no", order.OrderNo, "error", err)
+							_ = zw.Close()
+							return
+						}
+						exportErrors = append(exportErrors, fmt.Sprintf("%s: 写入合并PDF失败: %v", order.OrderNo, err))
+						slog.WarnContext(c.Request.Context(), "write year export pdf failed", "year", year, "order_no", order.OrderNo, "error", err)
 					}
-					exportErrors = append(exportErrors, fmt.Sprintf("%s: 写入合并PDF失败: %v", order.OrderNo, err))
-					slog.WarnContext(c.Request.Context(), "write year export pdf failed", "year", year, "order_no", order.OrderNo, "error", err)
 				}
 			}
 		}
 
-		for _, filename := range order.DeliveryFiles {
-			fullPath, err := s.storage.ValidateOrderFilePath(year, order.OrderNo, filename)
-			if err != nil {
-				exportErrors = append(exportErrors, fmt.Sprintf("%s: 发货单路径非法: %v", order.OrderNo, err))
-				continue
+		if exportTypes.Contract {
+			if !s.writeYearExportUploads(c.Request.Context(), zw, year, order.OrderNo, "合同", order.ContractFiles, &exportErrors, release) {
+				return
 			}
-			if err := writeZipEntry(c.Request.Context(), zw, filepath.Join(order.OrderNo, filename), fullPath); err != nil {
-				if c.Request.Context().Err() != nil {
-					release()
-					slog.WarnContext(c.Request.Context(), "write year export delivery cancelled", "year", year, "order_no", order.OrderNo, "filename", filename, "error", err)
-					_ = zw.Close()
-					return
-				}
-				exportErrors = append(exportErrors, fmt.Sprintf("%s: 写入发货单失败 %s: %v", order.OrderNo, filename, err))
-				slog.WarnContext(c.Request.Context(), "write year export delivery failed", "year", year, "order_no", order.OrderNo, "filename", filename, "error", err)
+		}
+		if exportTypes.Delivery {
+			if !s.writeYearExportUploads(c.Request.Context(), zw, year, order.OrderNo, "发货单", order.DeliveryFiles, &exportErrors, release) {
+				return
 			}
 		}
 		release()
@@ -498,6 +505,27 @@ func (s *Service) handleYearExport(c *gin.Context) {
 		slog.WarnContext(c.Request.Context(), "close year export zip failed", "year", year, "error", err)
 	}
 	metrics.Default.IncZIPExports()
+}
+
+func (s *Service) writeYearExportUploads(ctx context.Context, zw *zip.Writer, year int, orderNo, kind string, filenames []string, exportErrors *[]string, release func()) bool {
+	for _, filename := range filenames {
+		fullPath, err := s.storage.ValidateOrderFilePath(year, orderNo, filename)
+		if err != nil {
+			*exportErrors = append(*exportErrors, fmt.Sprintf("%s: %s路径非法: %v", orderNo, kind, err))
+			continue
+		}
+		if err := writeZipEntry(ctx, zw, filepath.Join(orderNo, filename), fullPath); err != nil {
+			if ctx.Err() != nil {
+				release()
+				slog.WarnContext(ctx, "write year export upload cancelled", "year", year, "order_no", orderNo, "kind", kind, "filename", filename, "error", err)
+				_ = zw.Close()
+				return false
+			}
+			*exportErrors = append(*exportErrors, fmt.Sprintf("%s: 写入%s失败 %s: %v", orderNo, kind, filename, err))
+			slog.WarnContext(ctx, "write year export upload failed", "year", year, "order_no", orderNo, "kind", kind, "filename", filename, "error", err)
+		}
+	}
+	return true
 }
 
 func (s *Service) handleCSVExport(c *gin.Context) {
@@ -816,6 +844,7 @@ func (s *Service) yearExportOrders(ctx context.Context, year int, operator, uplo
 	type row struct {
 		OrderNo       string  `db:"order_no"`
 		CustomerClean string  `db:"customer_clean"`
+		Kind          *string `db:"kind"`
 		Filename      *string `db:"filename"`
 	}
 
@@ -838,16 +867,17 @@ func (s *Service) yearExportOrders(ctx context.Context, year int, operator, uplo
 SELECT
 	o.order_no,
 	o.customer_clean,
+	u.kind,
 	u.filename
 FROM orders o
 LEFT JOIN uploads u
 	ON u.year = o.year
 	AND u.order_no = o.order_no
-	AND u.kind = '发货单'
+	AND u.kind IN ('合同', '发货单')
 WHERE o.year = ? AND EXISTS (
 	SELECT 1 FROM uploads ux WHERE ` + strings.Join(existsConds, " AND ") + `
 )
-ORDER BY o.order_no ASC, u.seq ASC, u.id ASC`
+ORDER BY o.order_no ASC, CASE u.kind WHEN '合同' THEN 1 WHEN '发货单' THEN 2 ELSE 3 END, u.seq ASC, u.id ASC`
 
 	var rows []row
 	if err := s.db.SelectContext(ctx, &rows, query, args...); err != nil {
@@ -866,11 +896,44 @@ ORDER BY o.order_no ASC, u.seq ASC, u.id ASC`
 				CustomerClean: row.CustomerClean,
 			})
 		}
-		if row.Filename != nil && *row.Filename != "" {
+		if row.Kind == nil || row.Filename == nil || *row.Filename == "" {
+			continue
+		}
+		switch *row.Kind {
+		case "合同":
+			ordersByNo[pos].ContractFiles = append(ordersByNo[pos].ContractFiles, *row.Filename)
+		case "发货单":
 			ordersByNo[pos].DeliveryFiles = append(ordersByNo[pos].DeliveryFiles, *row.Filename)
 		}
 	}
 	return ordersByNo, nil
+}
+
+func parseYearExportTypes(raw []string) (yearExportTypes, error) {
+	if len(raw) == 0 {
+		return yearExportTypes{PDF: true, Delivery: true}, nil
+	}
+	selected := yearExportTypes{}
+	for _, value := range raw {
+		for _, part := range strings.Split(value, ",") {
+			switch strings.TrimSpace(part) {
+			case "":
+				continue
+			case "contract", "合同":
+				selected.Contract = true
+			case "pdf", "PDF":
+				selected.PDF = true
+			case "delivery", "发货单":
+				selected.Delivery = true
+			default:
+				return yearExportTypes{}, apierror.Wrap(nil, http.StatusBadRequest, "BAD_REQUEST", "types 参数只能为 contract/pdf/delivery 或 合同/PDF/发货单")
+			}
+		}
+	}
+	if !selected.Contract && !selected.PDF && !selected.Delivery {
+		return yearExportTypes{}, apierror.Wrap(nil, http.StatusBadRequest, "BAD_REQUEST", "至少选择一种导出文件类型")
+	}
+	return selected, nil
 }
 
 func (s *Service) bundleFiles(ctx context.Context, year int, orderNo string) ([]string, error) {
